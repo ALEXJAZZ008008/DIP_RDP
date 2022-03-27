@@ -11,6 +11,7 @@ import random
 import numpy as np
 import scipy.constants
 import scipy.stats
+import scipy.signal
 import scipy.ndimage
 import tensorflow as tf
 # from numba import cuda
@@ -886,29 +887,264 @@ def train_model():
     output_uncertainty_paths = []
     output_accuracies = []
 
+    loss_list = []
+    evaluation_loss_list = []
+    evaluation_accuracy_list = []
+    previous_model_weight_list = []
+    previous_optimiser_weight_list = []
+
+    current_accuracy_nan_patience = 0
+
+    total_current_accuracy = None
+    total_gt_current_accuracy = None
+    max_accuracy = tf.cast(0.0, dtype=tf.float32)
+    max_accuracy_iteration = 0
+
+    total_iterations = 0
+    total_subiterations = 0
+
+    while True:
+        patient_loss_list = []
+        patient_evaluation_loss_list = []
+        patient_evaluation_accuracy_list = []
+
+        for i in range(len(y)):
+            print("Patient/Time point:\t{0}".format(str(i)))
+
+            patient_output_path = "{0}/{1}".format(output_path, str(i))
+
+            # create output directory
+            if not os.path.exists(patient_output_path):
+                os.makedirs(patient_output_path, mode=0o770)
+
+            with gzip.GzipFile(x[i], "r") as file:
+                number_of_windows = np.load(file).shape[0]
+
+            window_loss_list = []
+            window_evaluation_loss_list = []
+            window_evaluation_accuracy_list = []
+
+            for j in range(number_of_windows):
+                print("Window:\t{0}".format(str(j)))
+
+                window_output_path = "{0}/{1}".format(patient_output_path, str(j))
+
+                # create output directory
+                if not os.path.exists(window_output_path):
+                    os.makedirs(window_output_path, mode=0o770)
+
+                plot_output_path = "{0}/plots".format(window_output_path)
+
+                # create output directory
+                if not os.path.exists(plot_output_path):
+                    os.makedirs(plot_output_path, mode=0o770)
+
+                model_output_path = "{0}/models".format(window_output_path)
+
+                # create output directory
+                if not os.path.exists(model_output_path):
+                    os.makedirs(model_output_path, mode=0o770)
+
+                with gzip.GzipFile(x[i], "r") as file:
+                    x_train_iteration = np.asarray([np.load(file)[j]])
+
+                with gzip.GzipFile(y[i], "r") as file:
+                    y_train_iteration = np.asarray([np.load(file)[j]])
+
+                if float_sixteen_bool:
+                    x_train_iteration = x_train_iteration.astype(np.float16)
+                    y_train_iteration = y_train_iteration.astype(np.float16)
+                else:
+                    x_train_iteration = x_train_iteration.astype(np.float32)
+                    y_train_iteration = y_train_iteration.astype(np.float32)
+
+                x_train_iteration = tf.convert_to_tensor(x_train_iteration)
+                y_train_iteration = tf.convert_to_tensor(y_train_iteration)
+
+                if gt is not None:
+                    with gzip.GzipFile(gt[i], "r") as file:
+                        gt_prediction = np.asarray([np.load(file)[j]])
+
+                    if float_sixteen_bool:
+                        gt_prediction = gt_prediction.astype(np.float16)
+                    else:
+                        gt_prediction = gt_prediction.astype(np.float32)
+
+                    gt_prediction = tf.convert_to_tensor(gt_prediction)
+                else:
+                    gt_prediction = None
+
+                if loss_mask is not None:
+                    with gzip.GzipFile(loss_mask[i], "r") as file:
+                        loss_mask_train_iteration = np.asarray([np.load(file)[j]])
+
+                    if float_sixteen_bool:
+                        loss_mask_train_iteration = loss_mask_train_iteration.astype(np.float16)
+                    else:
+                        loss_mask_train_iteration = loss_mask_train_iteration.astype(np.float32)
+
+                    loss_mask_train_iteration = tf.convert_to_tensor(loss_mask_train_iteration)
+                else:
+                    loss_mask_train_iteration = None
+
+                if current_accuracy_nan_patience >= parameters.patience:
+                    break
+
+                print("Iteration:\t{0:<20}Patient subiteration:\t{1:<20}\tWindow subiteration:\t{2:<20}\tTotal iterations:\t{3:<20}\tTotal subiterations:\t{4:<20}".format(str(len(loss_list)), str(len(patient_loss_list)), str(len(window_loss_list)), str(total_iterations), str(total_subiterations)))
+
+                model, window_loss_list, uncertainty, previous_model_weight_list, previous_optimiser_weight_list = \
+                    train_step(model, optimiser, loss, x_train_iteration, y_train_iteration, loss_mask_train_iteration,
+                               window_loss_list, previous_model_weight_list, previous_optimiser_weight_list,
+                               model_output_path)
+
+                x_prediction, window_evaluation_loss_list, x_prediction_uncertainty, x_prediction_uncertainty_volume, current_accuracy = \
+                    test_step(model, loss, x_train_iteration, y_train_iteration, loss_mask_train_iteration,
+                              window_evaluation_loss_list)
+
+                if ((np.isnan(current_accuracy[0].numpy()) or np.isinf(current_accuracy[0].numpy())) or
+                        (np.isnan(current_accuracy[1].numpy()) or np.isinf(current_accuracy[1].numpy()))):
+                    model, optimiser, window_loss_list, window_evaluation_loss_list, previous_model_weight_list, previous_optimiser_weight_list = \
+                        test_backup(model, optimiser, window_loss_list, window_evaluation_loss_list,
+                                    previous_model_weight_list, previous_optimiser_weight_list)
+
+                    current_accuracy_nan_patience = current_accuracy_nan_patience + 1
+
+                    continue
+                else:
+                    if gt is None:
+                        current_accuracy_nan_patience = 0
+
+                total_current_accuracy = tf.math.reduce_mean([current_accuracy[0], current_accuracy[1]])
+
+                window_evaluation_accuracy_list.append(total_current_accuracy)
+
+                print("Loss:\t{0:<20}\tAccuracy:\t{1:<20}\tScale accuracy:\t{2:<20}\tTotal accuracy:\t{3:<20}\tUncertainty:\t{4:<20}".format(str(window_loss_list[-1].numpy()), str(current_accuracy[0].numpy()), str(current_accuracy[1].numpy()), str(total_current_accuracy.numpy()), str(uncertainty.numpy())))
+
+                if gt is not None:
+                    inverse_loss_mask_train_iteration = (loss_mask_train_iteration * -1.0) + 1.0
+
+                    if tf.reduce_sum(tf.cast(inverse_loss_mask_train_iteration, dtype=tf.float32)) > 0.0:
+                        current_gt_prediction = gt_prediction * inverse_loss_mask_train_iteration
+                        current_x_prediction = x_prediction * inverse_loss_mask_train_iteration
+                    else:
+                        current_gt_prediction = gt_prediction
+                        current_x_prediction = x_prediction
+
+                    gt_accuracy = [losses.correlation_coefficient_accuracy(current_gt_prediction, current_x_prediction),
+                                   losses.scale_accuracy(current_gt_prediction, current_x_prediction)]
+
+                    if ((np.isnan(gt_accuracy[0].numpy()) or np.isinf(gt_accuracy[0].numpy())) or
+                            (np.isnan(gt_accuracy[1].numpy()) or np.isinf(gt_accuracy[1].numpy()))):
+                        model, optimiser, window_loss_list, window_evaluation_loss_list, previous_model_weight_list, previous_optimiser_weight_list = \
+                            test_backup(model, optimiser, window_loss_list, window_evaluation_loss_list,
+                                        previous_model_weight_list, previous_optimiser_weight_list)
+
+                        current_accuracy_nan_patience = current_accuracy_nan_patience + 1
+
+                        continue
+                    else:
+                        current_accuracy_nan_patience = 0
+
+                    total_gt_current_accuracy = tf.math.reduce_mean([gt_accuracy[0], gt_accuracy[1]])
+
+                    print("GT loss:\t{0:<20}\tGT accuracy:\t{1:<20}\tGT scale accuracy:\t{2:<20}\tGT total accuracy:\t{3:<20}\tGT uncertainty:\t{4:<20}".format(str(window_evaluation_loss_list[-1].numpy()), str(gt_accuracy[0].numpy()), str(gt_accuracy[1].numpy()), str(total_gt_current_accuracy.numpy()), str(x_prediction_uncertainty.numpy())))
+
+                    if max_accuracy < total_gt_current_accuracy:
+                        max_accuracy = total_gt_current_accuracy
+                        max_accuracy_iteration = len(loss_list)
+                else:
+                    if max_accuracy < total_current_accuracy:
+                        max_accuracy = total_current_accuracy
+                        max_accuracy_iteration = len(loss_list)
+
+                if np.isnan(window_evaluation_loss_list[-1].numpy()) or np.isinf(window_evaluation_loss_list[-1].numpy()):
+                    model, optimiser, window_loss_list, window_evaluation_loss_list, previous_model_weight_list, previous_optimiser_weight_list = \
+                        test_backup(model, optimiser, window_loss_list, window_evaluation_loss_list,
+                                    previous_model_weight_list, previous_optimiser_weight_list)
+
+                    continue
+
+                x_output = np.squeeze(x_prediction.numpy()).astype(np.float64)
+                y_output = np.squeeze(y_train_iteration.numpy()).astype(np.float64)
+
+                plt.figure()
+
+                if gt is not None:
+                    plt.subplot(1, 3, 1)
+                else:
+                    plt.subplot(1, 2, 1)
+
+                plt.imshow(x_output[:, :, int(x_output.shape[2] / 2)], cmap="Greys")
+
+                if gt is not None:
+                    plt.subplot(1, 3, 2)
+                else:
+                    plt.subplot(1, 2, 2)
+
+                plt.imshow(y_output[:, :, int(y_output.shape[2] / 2)], cmap="Greys")
+
+                if gt is not None:
+                    gt_plot = np.squeeze(gt_prediction).astype(np.float64)
+
+                    plt.subplot(1, 3, 3)
+                    plt.imshow(gt_plot[:, :, int(gt_plot.shape[2] / 2)], cmap="Greys")
+
+                plt.tight_layout()
+                plt.savefig("{0}/{1}_{2}_{3}.png".format(plot_output_path, str(len(loss_list)), str(len(patient_loss_list)), str(len(window_loss_list) - 1)), format="png", dpi=600,
+                            bbox_inches="tight")
+                plt.close()
+
+                total_subiterations = total_subiterations + 1
+
+            patient_loss_list.append(np.median(np.array(window_loss_list)))
+            patient_evaluation_loss_list.append(np.median(np.array(window_evaluation_loss_list)))
+            patient_evaluation_accuracy_list.append(np.median(np.array(window_evaluation_accuracy_list)))
+
+        loss_list.append(np.median(np.array(patient_loss_list)))
+        evaluation_loss_list.append(np.median(np.array(patient_evaluation_loss_list)))
+        evaluation_accuracy_list.append(np.median(np.array(patient_evaluation_accuracy_list)))
+
+        evaluation_loss_list_len = len(evaluation_loss_list)
+
+        if (evaluation_loss_list_len > 1 and
+                total_subiterations >= parameters.loss_scaling_patience_skip and
+                evaluation_loss_list_len >= parameters.patience and
+                evaluation_accuracy_list[-1] != evaluation_accuracy_list[-2]):
+            current_patience = parameters.patience
+
+            if current_patience < 2:
+                current_patience = 2
+
+            current_evaluation_loss_list = np.array(evaluation_loss_list)
+
+            if parameters.patience_smoothing_bool:
+                current_evaluation_loss_list = scipy.signal.medfilt(current_evaluation_loss_list,
+                                                                    parameters.patience_smoothing_magnitude)
+
+            loss_gradient = np.gradient(current_evaluation_loss_list)[-current_patience:]
+
+            print("Plateau cutoff:\t{0:<20}\tMax distance to plateau cutoff:\t{1:<20}\tMean gradient direction:\t{2:<20}".format(str(parameters.plateau_cutoff), str(np.max(np.abs(loss_gradient) - parameters.plateau_cutoff)), str(np.mean(loss_gradient))))
+
+            # if (np.allclose(np.abs(loss_gradient), np.zeros(loss_gradient.shape), rtol=0.0,
+            #                 atol=parameters.plateau_cutoff) or
+            #         np.alltrue(loss_gradient - parameters.plateau_cutoff > 0.0)):
+            if np.allclose(np.abs(loss_gradient), np.zeros(loss_gradient.shape), rtol=0.0,
+                           atol=parameters.plateau_cutoff):
+                print("Reached plateau: Exiting...")
+                print("Maximum accuracy:\t{0:<20}\tMaximum accuracy iteration:\t{1:<20}".format(str(max_accuracy.numpy()), str(max_accuracy_iteration)))
+
+                if gt is not None:
+                    accuracy_loss = np.abs(total_gt_current_accuracy - max_accuracy)
+                else:
+                    accuracy_loss = np.abs(total_current_accuracy - max_accuracy)
+
+                print("Accuracy loss:\t{0:<20}".format(str(accuracy_loss)))
+
+                break
+
+        total_iterations = total_iterations + 1
+
     for i in range(len(y)):
-        if parameters.new_model_patient_bool and not parameters.new_model_window_bool:
-            if os.path.exists(model_update_path):
-                print("Previous model found!")
-
-                with open(model_update_path, "rb") as file:
-                    model.set_weights(pickle.load(file))
-            else:
-                del model
-
-                gc.collect()
-                tf.keras.backend.clear_session()
-
-                model = architecture.get_model(input_shape)
-
-        if parameters.new_optimiser_patient_bool and not parameters.new_optimiser_window_bool:
-            del optimiser
-
-            gc.collect()
-            tf.keras.backend.clear_session()
-
-            optimiser = architecture.get_optimiser()
-
         print("Patient/Time point:\t{0}".format(str(i)))
 
         patient_output_path = "{0}/{1}".format(output_path, str(i))
@@ -925,28 +1161,6 @@ def train_model():
         current_output_accuracies = []
 
         for j in range(number_of_windows):
-            if parameters.new_model_window_bool:
-                if os.path.exists(model_update_path):
-                    print("Previous model found!")
-
-                    with open(model_update_path, "rb") as file:
-                        model.set_weights(pickle.load(file))
-                else:
-                    del model
-
-                    gc.collect()
-                    tf.keras.backend.clear_session()
-
-                    model = architecture.get_model(input_shape)
-
-            if parameters.new_optimiser_window_bool:
-                del optimiser
-
-                gc.collect()
-                tf.keras.backend.clear_session()
-
-                optimiser = architecture.get_optimiser()
-
             print("Window:\t{0}".format(str(j)))
 
             window_output_path = "{0}/{1}".format(patient_output_path, str(j))
@@ -1009,202 +1223,12 @@ def train_model():
             else:
                 loss_mask_train_iteration = None
 
-            total_iterations = 0
+            x_prediction, x_prediction_uncertainty, x_prediction_uncertainty_volume = \
+                get_bayesian_test_prediction(model, x_train_iteration, parameters.bayesian_iterations,
+                                             parameters.bayesian_output_bool)
 
-            loss_list = []
-            evaluation_loss_list = []
-            evaluation_accuracy_list = []
-            previous_model_weight_list = []
-            previous_optimiser_weight_list = []
-
-            current_accuracy_nan_patience = 0
-
-            total_gt_current_accuracy = None
-            max_accuracy = tf.cast(0.0, dtype=tf.float32)
-            max_accuracy_iteration = 0
-
-            x_output = None
-            y_output = None
-            x_prediction_uncertainty_volume = None
-
-            while True:
-                if current_accuracy_nan_patience >= parameters.patience:
-                    break
-
-                print("Iteration:\t{0:<20}\tTotal iterations:\t{1:<20}".format(str(len(loss_list)), str(total_iterations)))
-
-                model, loss_list, uncertainty, previous_model_weight_list, previous_optimiser_weight_list = \
-                    train_step(model, optimiser, loss, x_train_iteration, y_train_iteration, loss_mask_train_iteration,
-                               loss_list, previous_model_weight_list, previous_optimiser_weight_list,
-                               model_output_path)
-
-                x_prediction, evaluation_loss_list, x_prediction_uncertainty, x_prediction_uncertainty_volume, current_accuracy = \
-                    test_step(model, loss, x_train_iteration, y_train_iteration, loss_mask_train_iteration,
-                              evaluation_loss_list)
-
-                if ((np.isnan(current_accuracy[0].numpy()) or np.isinf(current_accuracy[0].numpy())) or
-                        (np.isnan(current_accuracy[1].numpy()) or np.isinf(current_accuracy[1].numpy()))):
-                    model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list, previous_optimiser_weight_list = \
-                        test_backup(model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list,
-                                    previous_optimiser_weight_list)
-
-                    current_accuracy_nan_patience = current_accuracy_nan_patience + 1
-
-                    continue
-                else:
-                    if gt is None:
-                        current_accuracy_nan_patience = 0
-
-                total_current_accuracy = tf.math.reduce_mean([current_accuracy[0], current_accuracy[1]])
-
-                evaluation_accuracy_list.append(total_current_accuracy)
-
-                print("Loss:\t{0:<20}\tAccuracy:\t{1:<20}\tScale accuracy:\t{2:<20}\tTotal accuracy:\t{3:<20}\tUncertainty:\t{4:<20}".format(str(loss_list[-1].numpy()), str(current_accuracy[0].numpy()), str(current_accuracy[1].numpy()), str(total_current_accuracy.numpy()), str(uncertainty.numpy())))
-
-                if gt is not None:
-                    inverse_loss_mask_train_iteration = (loss_mask_train_iteration * -1.0) + 1.0
-
-                    if tf.reduce_sum(tf.cast(inverse_loss_mask_train_iteration, dtype=tf.float32)) > 0.0:
-                        current_gt_prediction = gt_prediction * inverse_loss_mask_train_iteration
-                        current_x_prediction = x_prediction * inverse_loss_mask_train_iteration
-                    else:
-                        current_gt_prediction = gt_prediction
-                        current_x_prediction = x_prediction
-
-                    gt_accuracy = [losses.correlation_coefficient_accuracy(current_gt_prediction, current_x_prediction),
-                                   losses.scale_accuracy(current_gt_prediction, current_x_prediction)]
-
-                    if ((np.isnan(gt_accuracy[0].numpy()) or np.isinf(gt_accuracy[0].numpy())) or
-                            (np.isnan(gt_accuracy[1].numpy()) or np.isinf(gt_accuracy[1].numpy()))):
-                        model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list, previous_optimiser_weight_list = \
-                            test_backup(model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list,
-                                        previous_optimiser_weight_list)
-
-                        current_accuracy_nan_patience = current_accuracy_nan_patience + 1
-
-                        continue
-                    else:
-                        current_accuracy_nan_patience = 0
-
-                    total_gt_current_accuracy = tf.math.reduce_mean([gt_accuracy[0], gt_accuracy[1]])
-
-                    print("GT loss:\t{0:<20}\tGT accuracy:\t{1:<20}\tGT scale accuracy:\t{2:<20}\tGT total accuracy:\t{3:<20}\tGT uncertainty:\t{4:<20}".format(str(evaluation_loss_list[-1].numpy()), str(gt_accuracy[0].numpy()), str(gt_accuracy[1].numpy()), str(total_gt_current_accuracy.numpy()), str(x_prediction_uncertainty.numpy())))
-
-                    if max_accuracy < total_gt_current_accuracy:
-                        max_accuracy = total_gt_current_accuracy
-                        max_accuracy_iteration = len(loss_list)
-                else:
-                    if max_accuracy < total_current_accuracy:
-                        max_accuracy = total_current_accuracy
-                        max_accuracy_iteration = len(loss_list)
-
-                if np.isnan(evaluation_loss_list[-1].numpy()) or np.isinf(evaluation_loss_list[-1].numpy()):
-                    model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list, previous_optimiser_weight_list = \
-                        test_backup(model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list,
-                                    previous_optimiser_weight_list)
-
-                    continue
-
-                x_output = np.squeeze(x_prediction.numpy()).astype(np.float64)
-                y_output = np.squeeze(y_train_iteration.numpy()).astype(np.float64)
-
-                plt.figure()
-
-                if gt is not None:
-                    plt.subplot(1, 3, 1)
-                else:
-                    plt.subplot(1, 2, 1)
-
-                plt.imshow(x_output[:, :, int(x_output.shape[2] / 2)], cmap="Greys")
-
-                if gt is not None:
-                    plt.subplot(1, 3, 2)
-                else:
-                    plt.subplot(1, 2, 2)
-
-                plt.imshow(y_output[:, :, int(y_output.shape[2] / 2)], cmap="Greys")
-
-                if gt is not None:
-                    gt_plot = np.squeeze(gt_prediction).astype(np.float64)
-
-                    plt.subplot(1, 3, 3)
-                    plt.imshow(gt_plot[:, :, int(gt_plot.shape[2] / 2)], cmap="Greys")
-
-                plt.tight_layout()
-                plt.savefig("{0}/{1}.png".format(plot_output_path, str(len(loss_list))), format="png", dpi=600,
-                            bbox_inches="tight")
-                plt.close()
-
-                plot_files = os.listdir(plot_output_path)
-
-                for l in range(len(plot_files)):
-                    current_plot_file = plot_files[l].strip()
-
-                    split_array = current_plot_file.split(".png")
-
-                    if len(split_array) >= 2:
-                        if int(split_array[0]) > len(loss_list):
-                            os.remove("{0}/{1}".format(plot_output_path, current_plot_file))
-
-                model_files = os.listdir(model_output_path)
-
-                for l in range(len(model_files)):
-                    current_plot_file = model_files[l].strip()
-
-                    split_array = current_plot_file.split("model_")[-1]
-                    split_array = split_array.split("optimiser_")[-1]
-
-                    split_array = split_array.split(".pkl")
-
-                    if len(split_array) >= 2:
-                        if int(split_array[0]) > len(loss_list):
-                            os.remove("{0}/{1}".format(model_output_path, current_plot_file))
-
-                evaluation_loss_list_len = len(evaluation_loss_list)
-
-                if (evaluation_loss_list_len > 1 and
-                        evaluation_loss_list_len >= parameters.loss_scaling_patience_skip and
-                        evaluation_loss_list_len >= parameters.patience and
-                        evaluation_accuracy_list[-1] != evaluation_accuracy_list[-2]):
-                    current_patience = parameters.patience
-
-                    if current_patience < 2:
-                        current_patience = 2
-
-                    loss_gradient = np.gradient(evaluation_loss_list)[-current_patience:]
-
-                    print("Plateau cutoff:\t{0:<20}\tMax distance to plateau cutoff:\t{1:<20}\tMean gradient direction:\t{2:<20}".format(str(parameters.plateau_cutoff), str(np.max(np.abs(loss_gradient) - parameters.plateau_cutoff)), str(np.mean(loss_gradient))))
-
-                    # if (np.allclose(np.abs(loss_gradient), np.zeros(loss_gradient.shape), rtol=0.0,
-                    #                 atol=parameters.plateau_cutoff) or
-                    #         np.alltrue(loss_gradient - parameters.plateau_cutoff > 0.0)):
-                    if np.allclose(np.abs(loss_gradient), np.zeros(loss_gradient.shape), rtol=0.0,
-                                   atol=parameters.plateau_cutoff):
-                        print("Reached plateau: Exiting...")
-                        print("Maximum accuracy:\t{0:<20}\tMaximum accuracy iteration:\t{1:<20}".format(str(max_accuracy.numpy()), str(max_accuracy_iteration)))
-
-                        if gt is not None:
-                            accuracy_loss = np.abs(total_gt_current_accuracy - max_accuracy)
-                        else:
-                            accuracy_loss = np.abs(total_current_accuracy - max_accuracy)
-
-                        print("Accuracy loss:\t{0:<20}".format(str(accuracy_loss)))
-
-                        break
-
-                total_iterations = total_iterations + 1
-
-            if current_accuracy_nan_patience >= parameters.patience:
-                print("Error: Input not suitable; continuing")
-
-                continue
-
-            if parameters.bayesian_test_bool != parameters.bayesian_output_bool:
-                x_prediction, x_prediction_uncertainty, x_prediction_uncertainty_volume = \
-                    get_bayesian_test_prediction(model, x_train_iteration, parameters.bayesian_iterations,
-                                                 parameters.bayesian_output_bool)
-
-                x_output = np.squeeze(x_prediction.numpy()).astype(np.float64)
+            x_output = np.squeeze(x_prediction.numpy()).astype(np.float64)
+            y_output = np.squeeze(y_train_iteration.numpy()).astype(np.float64)
 
             if gt_prediction is not None:
                 gt_prediction = gt_prediction.numpy()
@@ -1220,16 +1244,6 @@ def train_model():
             current_window_uncertainty_data_paths.append(current_window_uncertainty_data_path)
             current_output_accuracies.append(current_output_accuracy)
 
-            if parameters.new_model_window_bool:
-                with open(model_path, "wb") as file:  # noqa
-                    pickle.dump(model.get_weights(), file)
-
-                # with open("{0}/model.pkl".format(window_output_path), "wb") as file:
-                #     pickle.dump(model.get_weights(), file)
-
-                # with open("{0}/optimiser.pkl".format(window_output_path), "wb") as file:
-                #     pickle.dump(optimiser.get_weights(), file)
-
         try:
             output_paths.append(output_patient_time_point_predictions(current_window_data_paths, example_data,
                                                                       windowed_full_input_axial_size,
@@ -1243,28 +1257,11 @@ def train_model():
                                                                                   "uncertainty", i))
 
             output_accuracies.append(current_output_accuracies)
-
-            if parameters.new_model_patient_bool and not parameters.new_model_window_bool:
-                with open(model_path, "wb") as file:  # noqa
-                    pickle.dump(model.get_weights(), file)
-
-                # with open("{0}/model.pkl".format(patient_output_path), "wb") as file:
-                #     pickle.dump(model.get_weights(), file)
-
-                # with open("{0}/optimiser.pkl".format(patient_output_path), "wb") as file:
-                #     pickle.dump(optimiser.get_weights(), file)
         except:
             print("Error: Input not suitable; continuing")
 
-    if not parameters.new_model_patient_bool and not parameters.new_model_window_bool:
-        with open(model_path, "wb") as file:  # noqa
-            pickle.dump(model.get_weights(), file)
-
-        # with open("{0}/model.pkl".format(output_path), "wb") as file:
-        #     pickle.dump(model.get_weights(), file)
-
-        # with open("{0}/optimiser.pkl".format(output_path), "wb") as file:
-        #     pickle.dump(optimiser.get_weights(), file)
+    with open(model_path, "wb") as file:  # noqa
+        pickle.dump(model.get_weights(), file)
 
     print("Output accuracy:\t{0:<20}".format(str(np.mean(np.array(output_accuracies)[:, :, 0]))))
     print("Output scale accuracy:\t{0:<20}".format(str(np.mean(np.array(output_accuracies)[:, :, 1]))))

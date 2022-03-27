@@ -8,14 +8,14 @@ import tensorflow as tf
 import tensorflow_addons as tfa
 
 
-import DIP_RDP
+import DIP_RDP_iterative
 
-if DIP_RDP.reproducible_bool:
+if DIP_RDP_iterative.reproducible_bool:
     # 3. Set `numpy` pseudo-random generator at a fixed value
-    np.random.seed(DIP_RDP.seed_value)
+    np.random.seed(DIP_RDP_iterative.seed_value)
 
     # 4. Set `tensorflow` pseudo-random generator at a fixed value
-    tf.random.set_seed(DIP_RDP.seed_value)
+    tf.random.set_seed(DIP_RDP_iterative.seed_value)
 
 
 import losses

@@ -3,13 +3,13 @@
 # For internal research only.
 
 
-import gc
 import os
 import re
 import shutil
 import random
 import numpy as np
-import tensorflow as tf
+import scipy.signal
+import scipy.ndimage
 import matplotlib.pyplot as plt
 import nibabel as nib
 import gzip
@@ -29,22 +29,12 @@ if reproducible_bool:
 
     # 3. Set `numpy` pseudo-random generator at a fixed value
     np.random.seed(seed_value)
-
-    # 4. Set `tensorflow` pseudo-random generator at a fixed value
-    tf.random.set_seed(seed_value)
-
-    # 5. Configure a new global `tensorflow` session
-    # ONLY WORKS WITH TF V1
-    # session_conf = tf.compat.v1.ConfigProto(intra_op_parallelism_threads=1, inter_op_parallelism_threads=1)
-    # sess = tf.compat.v1.Session(graph=tf.compat.v1.get_default_graph(), config=session_conf)
-    # tf.compat.v1.keras.backend.set_session(sess)
 else:
     random.seed()
 
 
 import parameters
 import preprocessing
-import architecture
 import losses
 
 
@@ -231,44 +221,60 @@ def get_preprocessed_train_data():
     return x, y, example_data, preprocessing_steps, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt
 
 
-def train_step(optimiser, loss, x_train_iteration, y_train_iteration, loss_list):
-    # Open a GradientTape to record the operations run
-    # during the forward pass, which enables auto-differentiation.
-    with tf.GradientTape() as tape:
-        tape.reset()
+# https://stackoverflow.com/questions/10623448/making-gaussians-constrained-by-the-fwhm
+def gamma2sigma(example_data, gamma=6.4):
+    print("gamma2sigma")
 
-        # Compute the loss value for this minibatch.
-        current_loss = loss(y_train_iteration, x_train_iteration)
+    data_voxel_sizes = example_data.header.get_zooms()
 
-    loss_list.append(current_loss)
+    sigma = ((gamma / data_voxel_sizes[1]) * np.sqrt(2.0)) / (np.sqrt(2.0 * np.log(2.0)) * 2.0)
 
-    gc.collect()
-    tf.keras.backend.clear_session()
-
-    # Use the gradient tape to automatically retrieve
-    # the gradients of the trainable variables with respect to the loss.
-    grads = tape.gradient(current_loss, [x_train_iteration])
-
-    del tape
-
-    # Run one step of gradient descent by updating
-    # the value of the variables to minimize the loss.
-    optimiser.apply_gradients(zip(grads, [x_train_iteration]))
-
-    gc.collect()
-    tf.keras.backend.clear_session()
-
-    return x_train_iteration, loss_list
+    return sigma
 
 
-def test_step(loss, x_train_iteration, y_train_iteration, evaluation_loss_list):
+def resolution_smoothing(data_array, example_data):
+    print("resolution_smoothing")
+
+    kernel_size = np.max(data_array.shape)
+    sigma = gamma2sigma(example_data, 6.4)
+
+    kernel = scipy.signal.windows.gaussian(kernel_size, sigma)
+    kernel = kernel / np.sum(kernel)
+
+    kernel = np.expand_dims(kernel, axis=0)
+    kernel = np.expand_dims(kernel, axis=2)
+
+    kernel = np.expand_dims(kernel, axis=0)
+    kernel = np.expand_dims(kernel, axis=-1)
+
+    data_array = scipy.ndimage.convolve(data_array, kernel, mode="nearest")
+
+    kernel = np.moveaxis(kernel, (0, 1, 2, 3, 4), (4, 0, 1, 3, 2))
+
+    data_array = scipy.ndimage.convolve(data_array, kernel, mode="nearest")
+
+    kernel = np.array([1.0, 4.0, 1.0])
+    kernel = kernel / np.sum(kernel)
+
+    kernel = np.expand_dims(kernel, axis=0)
+    kernel = np.expand_dims(kernel, axis=0)
+
+    kernel = np.expand_dims(kernel, axis=0)
+    kernel = np.expand_dims(kernel, axis=-1)
+
+    data_array = scipy.ndimage.convolve(data_array, kernel, mode="nearest")
+
+    return data_array
+
+
+def test_step(x_train_iteration, example_data, y_train_iteration):
     print("test_step")
 
-    evaluation_loss_list.append(loss(y_train_iteration, x_train_iteration))
+    x_train_iteration = resolution_smoothing(x_train_iteration, example_data)
 
     current_accuracy = [losses.correlation_coefficient_accuracy(y_train_iteration, x_train_iteration)]
 
-    return x_train_iteration, evaluation_loss_list, current_accuracy
+    return x_train_iteration, current_accuracy
 
 
 def output_window_predictions(x_prediction, y_train_iteration, gt_prediction, preprocessing_steps, window_input_shape,
@@ -371,8 +377,6 @@ def train_model():
     x, y, example_data, preprocessing_steps, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt = \
         get_preprocessed_train_data()
 
-    optimiser, loss = architecture.get_model_all()
-
     output_paths = []
 
     for i in range(len(y)):
@@ -413,116 +417,52 @@ def train_model():
             x_train_iteration = x_train_iteration.astype(np.float32)
             y_train_iteration = y_train_iteration.astype(np.float32)
 
-            x_train_iteration = tf.Variable(tf.convert_to_tensor(x_train_iteration))
-            y_train_iteration = tf.Variable(tf.convert_to_tensor(y_train_iteration))
-
             if gt is not None:
                 with gzip.GzipFile(gt[i], "r") as file:
                     gt_prediction = np.asarray([np.load(file)[j]])
 
                 gt_prediction = gt_prediction.astype(np.float32)
-
-                gt_prediction = tf.Variable(tf.convert_to_tensor(gt_prediction))
             else:
                 gt_prediction = None
 
-            total_iterations = 0
+            x_prediction, current_accuracy = test_step(x_train_iteration, example_data, y_train_iteration)
 
-            loss_list = []
-            evaluation_loss_list = []
+            print("Accuracy:\t{0:<20}".format(str(current_accuracy[0].numpy())))
 
-            total_gt_current_accuracy = None
-            max_accuracy = tf.cast(0.0, dtype=tf.float32)
-            max_accuracy_iteration = 0
+            if gt is not None:
+                gt_accuracy = [losses.correlation_coefficient_accuracy(gt_prediction, x_prediction)]
 
-            while True:
-                print("Iteration:\t{0:<20}\tTotal iterations:\t{1:<20}".format(str(len(loss_list)), str(total_iterations)))
+                print("GT accuracy:\t{0:<20}".format(str(str(gt_accuracy[0].numpy()))))
 
-                x_train_iteration, loss_list = train_step(optimiser, loss, x_train_iteration, y_train_iteration,
-                                                          loss_list)
+            x_output = np.squeeze(x_prediction).astype(np.float64)
+            y_output = np.squeeze(y_train_iteration).astype(np.float64)
 
-                x_prediction, evaluation_loss_list, current_accuracy = \
-                    test_step(loss, x_train_iteration, y_train_iteration, evaluation_loss_list)
+            plt.figure()
 
-                total_current_accuracy = tf.math.reduce_mean([current_accuracy[0]])
+            if gt is not None:
+                plt.subplot(1, 3, 1)
+            else:
+                plt.subplot(1, 2, 1)
 
-                print("Loss:\t{0:<20}\tAccuracy:\t{1:<20}".format(str(loss_list[-1].numpy()), str(current_accuracy[0].numpy())))
+            plt.imshow(x_output[:, :, int(x_output.shape[2] / 2)], cmap="Greys")
 
-                if gt is not None:
-                    gt_accuracy = [losses.correlation_coefficient_accuracy(gt_prediction, x_prediction)]
+            if gt is not None:
+                plt.subplot(1, 3, 2)
+            else:
+                plt.subplot(1, 2, 2)
 
-                    total_gt_current_accuracy = tf.math.reduce_mean([gt_accuracy[0]])
+            plt.imshow(y_output[:, :, int(y_output.shape[2] / 2)], cmap="Greys")
 
-                    print("GT loss:\t{0:<20}\tGT accuracy:\t{1:<20}".format(str(evaluation_loss_list[-1].numpy()), str(gt_accuracy[0].numpy())))
+            if gt is not None:
+                gt_plot = np.squeeze(gt_prediction).astype(np.float64)
 
-                    if max_accuracy < total_gt_current_accuracy:
-                        max_accuracy = total_gt_current_accuracy
-                        max_accuracy_iteration = len(loss_list)
-                else:
-                    if max_accuracy < total_current_accuracy:
-                        max_accuracy = total_current_accuracy
-                        max_accuracy_iteration = len(loss_list)
+                plt.subplot(1, 3, 3)
+                plt.imshow(gt_plot[:, :, int(gt_plot.shape[2] / 2)], cmap="Greys")
 
-                x_output = np.squeeze(x_prediction.numpy()).astype(np.float64)
-                y_output = np.squeeze(y_train_iteration.numpy()).astype(np.float64)
-
-                plt.figure()
-
-                if gt is not None:
-                    plt.subplot(1, 3, 1)
-                else:
-                    plt.subplot(1, 2, 1)
-
-                plt.imshow(x_output[:, :, int(x_output.shape[2] / 2)], cmap="Greys")
-
-                if gt is not None:
-                    plt.subplot(1, 3, 2)
-                else:
-                    plt.subplot(1, 2, 2)
-
-                plt.imshow(y_output[:, :, int(y_output.shape[2] / 2)], cmap="Greys")
-
-                if gt is not None:
-                    gt_plot = np.squeeze(gt_prediction).astype(np.float64)
-
-                    plt.subplot(1, 3, 3)
-                    plt.imshow(gt_plot[:, :, int(gt_plot.shape[2] / 2)], cmap="Greys")
-
-                plt.tight_layout()
-                plt.savefig("{0}/{1}.png".format(plot_output_path, str(len(loss_list))), format="png", dpi=600,
-                            bbox_inches="tight")
-                plt.close()
-
-                evaluation_loss_list_len = len(evaluation_loss_list)
-
-                if evaluation_loss_list_len > 1 and evaluation_loss_list_len >= parameters.patience:
-                    current_patience = parameters.patience
-
-                    if current_patience < 2:
-                        current_patience = 2
-
-                    loss_gradient = np.gradient(evaluation_loss_list[-current_patience:])[-parameters.patience:]
-
-                    print("Plateau cutoff:\t{0:<20}\tMax distance to plateau cutoff:\t{1:<20}".format(str(parameters.plateau_cutoff), str(np.max(np.abs(loss_gradient) - parameters.plateau_cutoff))))
-
-                    if np.allclose(loss_gradient, np.zeros(loss_gradient.shape), rtol=0.0,
-                                   atol=parameters.plateau_cutoff):
-                        print("Reached plateau: Exiting...")
-                        print("Maximum accuracy:\t{0:<20}\tMaximum accuracy iteration:\t{1:<20}".format(str(max_accuracy.numpy()), str(max_accuracy_iteration)))
-
-                        if gt is not None:
-                            accuracy_loss = np.abs(total_gt_current_accuracy - max_accuracy)
-                        else:
-                            accuracy_loss = np.abs(total_current_accuracy - max_accuracy)
-
-                        print("Accuracy loss:\t{0:<20}".format(str(accuracy_loss)))
-
-                        break
-
-                total_iterations = total_iterations + 1
-
-            if gt_prediction is not None:
-                gt_prediction = gt_prediction.numpy()
+            plt.tight_layout()
+            plt.savefig("{0}/{1}.png".format(plot_output_path, str(0)), format="png", dpi=600,
+                        bbox_inches="tight")
+            plt.close()
 
             current_window_data_path = \
                 output_window_predictions(x_output, y_output, gt_prediction, preprocessing_steps, window_input_shape,

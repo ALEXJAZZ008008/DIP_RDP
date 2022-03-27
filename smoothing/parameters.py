@@ -16,9 +16,3 @@ data_window_size = 64
 data_window_bool = True
 
 data_resample_power_of = 2
-
-
-total_variation_weight = 1e-06
-
-patience = 10
-plateau_cutoff = 1e-04

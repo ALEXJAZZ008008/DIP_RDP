@@ -30,19 +30,13 @@ def total_variation(images):
 
     # Calculate the difference of neighboring pixel-values.
     # The images are shifted one pixel along the height, width and depth by slicing.
-    pixel_dif1 = images[:, 1:, :, :, :] - images[:, :-1, :, :, :]
-    pixel_dif2 = images[:, :, 1:, :, :] - images[:, :, :-1, :, :]
-    pixel_dif3 = images[:, :, :, 1:, :] - images[:, :, :, :-1, :]
-
-    # Only sum for the last 4 axis.
-    # This results in a 1-D tensor with the total variation for each image.
-    sum_axis = [1, 2, 3, 4]
+    pixel_dif1 = tf.math.abs(images[:, 1:, :, :, :] - images[:, :-1, :, :, :])
+    pixel_dif2 = tf.math.abs(images[:, :, 1:, :, :] - images[:, :, :-1, :, :])
+    pixel_dif3 = tf.math.abs(images[:, :, :, 1:, :] - images[:, :, :, :-1, :])
 
     # Calculate the total variation by taking the absolute value of the
     # pixel-differences and summing over the appropriate axis.
-    tot_var = tf.reduce_mean((tf.math.reduce_mean(tf.math.abs(pixel_dif1), axis=sum_axis) +
-                              tf.math.reduce_mean(tf.math.abs(pixel_dif2), axis=sum_axis) +
-                              tf.math.reduce_mean(tf.math.abs(pixel_dif3), axis=sum_axis)))
+    tot_var = tf.math.reduce_sum(pixel_dif1) + tf.math.reduce_sum(pixel_dif2) + tf.math.reduce_sum(pixel_dif3)
 
     return tot_var
 

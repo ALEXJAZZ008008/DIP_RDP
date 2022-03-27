@@ -6,11 +6,11 @@
 import tensorflow as tf
 
 
-import DIP_RDP
+import DIP_RDP_iterative
 
-if DIP_RDP.reproducible_bool:
+if DIP_RDP_iterative.reproducible_bool:
     # 4. Set `tensorflow` pseudo-random generator at a fixed value
-    tf.random.set_seed(DIP_RDP.seed_value)
+    tf.random.set_seed(DIP_RDP_iterative.seed_value)
 
 
 import parameters

@@ -6,9 +6,6 @@
 import os
 
 
-# data_path = "{0}/DIP_RDP_data/static_thorax_simulation/".format(os.path.dirname(os.getcwd()))
-# output_path = "{0}/output/static_thorax_simulation/".format(os.getcwd())
-
 data_path = "{0}/DIP_RDP_data/dynamic_thorax_simulation/".format(os.path.dirname(os.getcwd()))
 output_path = "{0}/output/dynamic_thorax_simulation/".format(os.getcwd())
 
@@ -35,13 +32,6 @@ layer_depth = [2, 4, 8, 16, 32, 64, 128, 256]
 layer_groups = [1, 1, 1, 1, 1, 1, 1, 1]
 
 
-new_model_patient_bool = True
-new_optimiser_patient_bool = True
-
-new_model_window_bool = True
-new_optimiser_window_bool = True
-
-
 jitter_magnitude = 1
 
 elastic_jitter_bool = False
@@ -54,7 +44,7 @@ skip_gaussian_sigma = 0.0
 layer_gaussian_sigma = 0.0
 
 
-dropout = 0.5
+dropout = layer_depth[1] / layer_depth[7]
 
 bayesian_test_bool = False
 bayesian_output_bool = True
@@ -76,12 +66,14 @@ kernel_regulariser_weight = 0.0
 activity_regulariser_weight = 0.0
 
 
-weight_decay = 1e-02
+weight_decay = 1e-03
 
 
 backtracking_weight_percentage = None
 backtracking_weight_perturbation = 1e-04
 
+patience_smoothing_bool = True
+patience_smoothing_magnitude = 9
 patience = 10
 plateau_cutoff = 1e-04
 loss_scaling_patience_skip = 15

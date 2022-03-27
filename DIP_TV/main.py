@@ -46,26 +46,6 @@ import preprocessing
 import architecture
 
 
-float_sixteen_bool = True  # set the network to use float16 data
-cpu_bool = False  # if using CPU, set to true: disables mixed precision computation
-
-# mixed precision float16 computation allows the network to use both float16 and float32 where necessary,
-# this improves performance on the GPU.
-if float_sixteen_bool and not cpu_bool:
-    policy = tf.keras.mixed_precision.Policy("mixed_float16")
-    tf.keras.mixed_precision.set_global_policy(policy)
-else:
-    policy = tf.keras.mixed_precision.Policy(tf.dtypes.float32.name)
-    tf.keras.mixed_precision.set_global_policy(policy)
-
-
-gpus = tf.config.list_physical_devices("GPU")
-
-if gpus:
-    for gpu in gpus:
-        tf.config.experimental.set_memory_growth(gpu, True)
-
-
 data_path = parameters.data_path
 output_path = parameters.output_path
 
@@ -290,9 +270,6 @@ def get_model_memory_usage(batch_size, model):
 def get_evaluation_score(x_prediction, gt):
     print("get_evaluation_score")
 
-    if float_sixteen_bool:
-        x_prediction = x_prediction.astype(np.float32)
-
     accuracy = np.corrcoef(np.ravel(np.squeeze(gt)), np.ravel(np.squeeze(x_prediction)))[0, 1]
 
     return accuracy
@@ -407,12 +384,8 @@ def train_model():
             with gzip.GzipFile(y[i], "r") as file:
                 y_train_iteration = np.asarray([np.load(file)[j]])
 
-            if float_sixteen_bool:
-                x_train_iteration = x_train_iteration.astype(np.float16)
-                y_train_iteration = y_train_iteration.astype(np.float16)
-            else:
-                x_train_iteration = x_train_iteration.astype(np.float32)
-                y_train_iteration = y_train_iteration.astype(np.float32)
+            x_train_iteration = x_train_iteration.astype(np.float32)
+            y_train_iteration = y_train_iteration.astype(np.float32)
 
             if gt is not None:
                 with gzip.GzipFile(gt[i], "r") as file:
@@ -487,7 +460,7 @@ def train_model():
 
                 if parameters.total_variation_bool:
                     if len(loss_list) >= parameters.patience:
-                        loss_gradient = np.gradient(loss_list[-parameters.patience:])[-parameters.patience:]
+                        loss_gradient = np.gradient(loss_list)[-parameters.patience:]
 
                         if np.allclose(loss_gradient, np.zeros(loss_gradient.shape), atol=parameters.plateau_cutoff):
                             print("Reached plateau: Exiting...")
