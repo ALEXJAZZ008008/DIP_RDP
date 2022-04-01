@@ -4,6 +4,7 @@
 
 
 import tensorflow as tf
+import tensorflow_probability as tfp
 
 
 import DIP_RDP_iterative
@@ -20,8 +21,30 @@ def scaled_mean_squared_error_loss(y_true, y_pred):
     y_true = tf.cast(y_true, dtype=tf.float32)
     y_pred = tf.cast(y_pred, dtype=tf.float32)
 
-    return tf.cast(tf.math.reduce_mean(tf.math.square(y_pred - y_true)) /
-                   tf.math.reduce_mean(tf.math.square(y_true)), dtype=tf.float32)
+    return tf.math.divide_no_nan(tf.math.reduce_mean(tf.math.square(y_pred - y_true)),
+                                 tf.math.reduce_mean(tf.math.square(y_true)))
+
+
+def scaled_log_cosh_loss(y_true, y_pred):
+    y_true = tf.cast(y_true, dtype=tf.float32)
+    y_pred = tf.cast(y_pred, dtype=tf.float32)
+
+    y_true = (y_true - tf.reduce_min(y_true)) + parameters.epsilon
+    y_pred = (y_pred - tf.reduce_min(y_pred)) + parameters.epsilon
+
+    return tf.math.reduce_mean(tf.math.divide_no_nan(tf.math.log(tf.math.cosh(y_pred - y_true)),
+                                                     tf.math.log(tf.math.cosh(y_true))))
+
+
+def scaled_kl_divergence_loss(y_true, y_pred):
+    y_true = tf.cast(y_true, dtype=tf.float32)
+    y_pred = tf.cast(y_pred, dtype=tf.float32)
+
+    y_true = (y_true - tf.reduce_min(y_true)) + parameters.epsilon
+    y_pred = (y_pred - tf.reduce_min(y_pred)) + parameters.epsilon
+
+    return tf.math.divide_no_nan(tf.reduce_mean(y_true * tf.math.log(tf.math.divide_no_nan(y_true, y_pred))),
+                                 tf.reduce_mean(y_true * tf.math.log(y_true)))
 
 
 def total_variation_loss(_, y_pred):
@@ -62,27 +85,73 @@ def total_variation_loss(_, y_pred):
                           padding="VALID",
                           dilations=[1, 1, 1, 1, 1])
 
-    return tf.cast(parameters.total_variation_weight * tf.reduce_mean(tf.math.square(y_pred)), dtype=tf.float32)
+    return parameters.total_variation_weight * tf.reduce_mean(tf.math.square(y_pred))
 
 
 def scaled_mean_squared_error_total_variation_loss(y_true, y_pred):
     y_true = tf.cast(y_true, dtype=tf.float32)
     y_pred = tf.cast(y_pred, dtype=tf.float32)
 
-    return tf.cast(tf.reduce_sum(tf.stack([scaled_mean_squared_error_loss(y_true, y_pred),
-                                           total_variation_loss(y_true, y_pred)])), dtype=tf.float32)
+    return tf.reduce_sum(tf.stack([scaled_mean_squared_error_loss(y_true, y_pred),
+                                   total_variation_loss(y_true, y_pred)]))
+
+
+def scaled_log_cosh_total_variation_loss(y_true, y_pred):
+    y_true = tf.cast(y_true, dtype=tf.float32)
+    y_pred = tf.cast(y_pred, dtype=tf.float32)
+
+    return tf.reduce_sum([scaled_log_cosh_loss(y_true, y_pred), total_variation_loss(y_true, y_pred)])
+
+
+def scaled_kl_divergence_total_variation_loss(y_true, y_pred):
+    y_true = tf.cast(y_true, dtype=tf.float32)
+    y_pred = tf.cast(y_pred, dtype=tf.float32)
+
+    return tf.reduce_sum([scaled_kl_divergence_loss(y_true, y_pred), total_variation_loss(y_true, y_pred)])
+
+
+def scale_regulariser(y_true, y_pred):
+    def _scale_regulariser(_y_true, _y_pred):
+        return parameters.scale_accuracy_scale * \
+               (tf.math.divide_no_nan(tf.reduce_mean(tf.math.abs(_y_true - _y_pred)),
+                                      tf.reduce_mean(tf.math.abs(_y_true))))
+
+    y_true = tf.cast(y_true, dtype=tf.float32)
+    y_pred = tf.cast(y_pred, dtype=tf.float32)
+
+    return parameters.scale_loss_weight * _scale_regulariser(tf.math.reduce_mean(y_true), tf.math.reduce_mean(y_pred))
+
+
+def scale_accuracy(y_true, y_pred):
+    def _scale_accuracy(_y_true, _y_pred):
+        return (1.0 - tf.math.erf(parameters.scale_accuracy_scale *
+                                  tf.math.divide_no_nan(tf.reduce_mean(tf.math.abs(_y_true - _y_pred)),
+                                                        tf.reduce_mean(tf.math.abs(_y_true)))))
+
+    y_true = tf.cast(y_true, dtype=tf.float64)
+    y_pred = tf.cast(y_pred, dtype=tf.float64)
+
+    return _scale_accuracy(tf.math.reduce_mean(y_true), tf.math.reduce_mean(y_pred))
+
+
+def covariance_regulariser(weight_matrix):
+    weight_matrix = tf.cast(weight_matrix, dtype=tf.float32)
+    weight_matrix = tf.reshape(weight_matrix, shape=(-1, weight_matrix.shape[-1]))
+
+    return parameters.covariance_weight * tf.math.reduce_mean(tfp.stats.covariance(weight_matrix, sample_axis=-1,  # noqa
+                                                                                   event_axis=0))
 
 
 def l1_regulariser(weight_matrix):
     weight_matrix = tf.cast(weight_matrix, dtype=tf.float32)
 
-    return tf.cast(tf.math.reduce_mean(tf.math.abs(weight_matrix)), dtype=tf.float32)
+    return tf.math.reduce_mean(tf.math.abs(weight_matrix))
 
 
 def l2_regulariser(weight_matrix):
     weight_matrix = tf.cast(weight_matrix, dtype=tf.float32)
 
-    return tf.cast(tf.math.reduce_mean(tf.math.square(weight_matrix)), dtype=tf.float32)
+    return tf.math.reduce_mean(tf.math.square(weight_matrix))
 
 
 def correlation_coefficient_loss(y_true, y_pred):
@@ -96,43 +165,11 @@ def correlation_coefficient_loss(y_true, y_pred):
     y_true = tf.cast(y_true, dtype=tf.float32)
     y_pred = tf.cast(y_pred, dtype=tf.float32)
 
-    return tf.cast(_correlation_coefficient(y_true - tf.math.reduce_mean(y_true),
-                                            y_pred - tf.math.reduce_mean(y_pred)), dtype=tf.float32)
+    return _correlation_coefficient(y_true - tf.math.reduce_mean(y_true), y_pred - tf.math.reduce_mean(y_pred))
 
 
 def correlation_coefficient_accuracy(y_true, y_pred):
-    y_true = tf.cast(y_true, dtype=tf.float32)
-    y_pred = tf.cast(y_pred, dtype=tf.float32)
+    y_true = tf.cast(y_true, dtype=tf.float64)
+    y_pred = tf.cast(y_pred, dtype=tf.float64)
 
-    return tf.cast((correlation_coefficient_loss(y_true, y_pred) * -1.0) + 1.0, dtype=tf.float32)
-
-
-def scale_regulariser(y_true, y_pred):
-    def _scale_regulariser(_y_true, _y_pred):
-        return parameters.scale_accuracy_scale * \
-               (tf.math.divide_no_nan(tf.reduce_mean(tf.math.abs(_y_true - _y_pred)),
-                                      tf.reduce_mean(tf.math.abs(_y_true))))
-
-    y_true = tf.cast(y_true, dtype=tf.float32)
-    y_pred = tf.cast(y_pred, dtype=tf.float32)
-
-    y_true = y_true - tf.math.reduce_min(y_true)
-    y_pred = y_pred - tf.math.reduce_min(y_pred)
-
-    return tf.cast(parameters.scale_loss_weight *
-                   _scale_regulariser(tf.math.reduce_sum(y_true), tf.math.reduce_sum(y_pred)), dtype=tf.float32)
-
-
-def scale_accuracy(y_true, y_pred):
-    def _scale_accuracy(_y_true, _y_pred):
-        return (1.0 - tf.math.erf(parameters.scale_accuracy_scale *
-                                  tf.math.divide_no_nan(tf.reduce_mean(tf.math.abs(_y_true - _y_pred)),
-                                                        tf.reduce_mean(tf.math.abs(_y_true)))))
-
-    y_true = tf.cast(y_true, dtype=tf.float32)
-    y_pred = tf.cast(y_pred, dtype=tf.float32)
-
-    y_true = y_true - tf.math.reduce_min(y_true)
-    y_pred = y_pred - tf.math.reduce_min(y_pred)
-
-    return tf.cast(_scale_accuracy(tf.math.reduce_sum(y_true), tf.math.reduce_sum(y_pred)), dtype=tf.float32)
+    return tf.cast((correlation_coefficient_loss(y_true, y_pred) * -1.0) + 1.0, dtype=tf.float64)

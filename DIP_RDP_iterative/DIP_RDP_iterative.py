@@ -58,23 +58,30 @@ else:
 #     pass
 
 float_sixteen_bool = True  # set the network to use float16 data
+bfloat_sixteen_bool = False
 cpu_bool = False  # if using CPU, set to true: disables mixed precision computation
 
 # mixed precision float16 computation allows the network to use both float16 and float32 where necessary,
 # this improves performance on the GPU.
 if float_sixteen_bool and not cpu_bool:
-    policy = tf.keras.mixed_precision.Policy("mixed_float16")
-    tf.keras.mixed_precision.set_global_policy(policy)
+    if bfloat_sixteen_bool:
+        policy = tf.keras.mixed_precision.Policy("mixed_bfloat16")
+    else:
+        policy = tf.keras.mixed_precision.Policy("mixed_float16")
 else:
+    float_sixteen_bool = False
+    bfloat_sixteen_bool = False
+
     policy = tf.keras.mixed_precision.Policy(tf.dtypes.float32.name)
-    tf.keras.mixed_precision.set_global_policy(policy)
+
+tf.keras.mixed_precision.set_global_policy(policy)
 
 
-# gpus = tf.config.list_physical_devices("GPU")
+gpus = tf.config.list_physical_devices("GPU")
 
-# if gpus:
-#     for gpu in gpus:
-#         tf.config.experimental.set_memory_growth(gpu, True)
+if gpus:
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
 
 
 import parameters
@@ -444,11 +451,11 @@ def get_preprocessed_train_data():
     if loss_mask is not None:
         loss_mask = preprocessing.data_upsample_pad(loss_mask, "path")
 
-    x, _ = preprocessing.data_preprocessing(x, "path")
-    y, preprocessing_steps = preprocessing.data_preprocessing(y, "path")
+    x, preprocessing_steps = preprocessing.data_preprocessing(x, "path")
+    # y, preprocessing_steps = preprocessing.data_preprocessing(y, "path")
 
-    if gt is not None:
-        gt, _ = preprocessing.data_preprocessing(gt, "path")
+    # if gt is not None:
+    #     gt, _ = preprocessing.data_preprocessing(gt, "path")
 
     return x, y, example_data, preprocessing_steps, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt, data_mask, loss_mask
 
@@ -503,12 +510,34 @@ def get_bayesian_train_prediction(model, x_train_iteration):
     gc.collect()
     tf.keras.backend.clear_session()
 
-    x_prediction = tf.math.reduce_mean([x_prediction_1], axis=0)
+    x_prediction = tf.math.reduce_mean([x_prediction_1[0]], axis=0)
+    # x_latent = tf.math.reduce_mean([x_prediction_1[8]], axis=0)
 
-    x_prediction_uncertainty = tf.cast(tf.math.reduce_mean(tf.math.reduce_std([x_prediction_1], axis=0)),
-                                       dtype=tf.float32)
+    # x_latent_0 = tf.math.reduce_mean([x_prediction_1[1]], axis=0)
+    # x_latent_1 = tf.math.reduce_mean([x_prediction_1[2]], axis=0)
+    # x_latent_2 = tf.math.reduce_mean([x_prediction_1[3]], axis=0)
+    # x_latent_3 = tf.math.reduce_mean([x_prediction_1[4]], axis=0)
+    # x_latent_4 = tf.math.reduce_mean([x_prediction_1[5]], axis=0)
+    # x_latent_5 = tf.math.reduce_mean([x_prediction_1[6]], axis=0)
+    # x_latent_6 = tf.math.reduce_mean([x_prediction_1[7]], axis=0)
 
-    return x_prediction, x_prediction_uncertainty
+    # x_prediction_uncertainty = tf.math.reduce_mean(tf.math.reduce_std([x_prediction_1[0]], axis=0))
+    # x_latent_uncertainty = tf.math.reduce_mean(tf.math.reduce_std([x_prediction_1[8]], axis=0))
+
+    x_latent = None
+
+    x_latent_0 = None
+    x_latent_1 = None
+    x_latent_2 = None
+    x_latent_3 = None
+    x_latent_4 = None
+    x_latent_5 = None
+    x_latent_6 = None
+
+    x_prediction_uncertainty = None
+    x_latent_uncertainty = None
+
+    return x_prediction, x_prediction_uncertainty, x_latent, x_latent_uncertainty, x_latent_0, x_latent_1, x_latent_2, x_latent_3, x_latent_4, x_latent_5, x_latent_6
 
 
 def train_backup(model, optimiser, loss_list, previous_model_weight_list, previous_optimiser_weight_list,
@@ -568,30 +597,78 @@ def train_step(model, optimiser, loss, x_train_iteration, y_train_iteration, los
         x_train_iteration_jitter, y_train_iteration_jitter, loss_mask_train_iteration = \
             preprocessing.introduce_jitter(x_train_iteration, y_train_iteration, loss_mask_train_iteration)
 
-        # Open a GradientTape to record the operations run
-        # during the forward pass, which enables auto-differentiation.
-        with tf.GradientTape() as tape:
-            tape.reset()
+        if bfloat_sixteen_bool:
+            # Open a GradientTape to record the operations run
+            # during the forward pass, which enables auto-differentiation.
+            with tf.GradientTape() as tape:
+                tape.reset()
 
-            # Run the forward pass of the layer.
-            # The operations that the layer applies
-            # to its inputs are going to be recorded
-            # on the GradientTape.
-            logits, uncertainty = get_bayesian_train_prediction(model, x_train_iteration_jitter)  # Logits for this minibatch
+                # Run the forward pass of the layer.
+                # The operations that the layer applies
+                # to its inputs are going to be recorded
+                # on the GradientTape.
+                x_prediction, x_prediction_uncertainty, x_latent, x_latent_uncertainty, x_latent_0, x_latent_1, x_latent_2, x_latent_3, x_latent_4, x_latent_5, x_latent_6 = get_bayesian_train_prediction(
+                    model, x_train_iteration_jitter)  # Logits for this minibatch
 
-            current_y_train_iteration = y_train_iteration * loss_mask_train_iteration
-            logits = logits * loss_mask_train_iteration
+                # current_y_train_iteration = y_train_iteration * loss_mask_train_iteration
+                # x_prediction = x_prediction * loss_mask_train_iteration
 
-            # Compute the loss value for this minibatch.
-            current_loss = tf.math.reduce_sum([loss(current_y_train_iteration, logits),
-                                               parameters.uncertainty_weight * tf.cast(uncertainty, dtype=tf.float32),
-                                               losses.scale_regulariser(y_train_iteration_jitter, logits),
-                                               parameters.kernel_regulariser_weight *
-                                               tf.math.reduce_mean(model.losses[::2]),
-                                               parameters.activity_regulariser_weight *
-                                               tf.math.reduce_mean(model.losses[1::2])])
+                # Compute the loss value for this minibatch.
+                # current_loss = tf.math.reduce_sum([loss(current_y_train_iteration, x_prediction),
+                #                                    parameters.uncertainty_weight *
+                #                                    tf.cast(x_prediction_uncertainty, dtype=tf.float32),
+                #                                    losses.scale_regulariser(y_train_iteration_jitter, x_prediction),
+                #                                    tf.math.reduce_mean([losses.covariance_regulariser(x_latent),
+                #                                                         losses.covariance_regulariser(x_latent_0),
+                #                                                         losses.covariance_regulariser(x_latent_1),
+                #                                                         losses.covariance_regulariser(x_latent_2),
+                #                                                         losses.covariance_regulariser(x_latent_3),
+                #                                                         losses.covariance_regulariser(x_latent_4),
+                #                                                         losses.covariance_regulariser(x_latent_5),
+                #                                                         losses.covariance_regulariser(x_latent_6)]),
+                #                                    parameters.kernel_regulariser_weight *
+                #                                    tf.math.reduce_mean(model.losses[::2]),
+                #                                    parameters.activity_regulariser_weight *
+                #                                    tf.math.reduce_mean(model.losses[1::2])])
 
-            current_loss = optimiser.get_scaled_loss(current_loss)
+                current_loss = loss(y_train_iteration, x_prediction)
+        else:
+            # Open a GradientTape to record the operations run
+            # during the forward pass, which enables auto-differentiation.
+            with tf.GradientTape() as tape:
+                tape.reset()
+
+                # Run the forward pass of the layer.
+                # The operations that the layer applies
+                # to its inputs are going to be recorded
+                # on the GradientTape.
+                x_prediction, x_prediction_uncertainty, x_latent, x_latent_uncertainty, x_latent_0, x_latent_1, x_latent_2, x_latent_3, x_latent_4, x_latent_5, x_latent_6 = get_bayesian_train_prediction(
+                    model, x_train_iteration_jitter)  # Logits for this minibatch
+
+                # current_y_train_iteration = y_train_iteration * loss_mask_train_iteration
+                # x_prediction = x_prediction * loss_mask_train_iteration
+
+                # Compute the loss value for this minibatch.
+                # current_loss = tf.math.reduce_sum([loss(current_y_train_iteration, x_prediction),
+                #                                    parameters.uncertainty_weight *
+                #                                    tf.cast(x_prediction_uncertainty, dtype=tf.float32),
+                #                                    losses.scale_regulariser(y_train_iteration_jitter, x_prediction),
+                #                                    tf.math.reduce_mean([losses.covariance_regulariser(x_latent),
+                #                                                         losses.covariance_regulariser(x_latent_0),
+                #                                                         losses.covariance_regulariser(x_latent_1),
+                #                                                         losses.covariance_regulariser(x_latent_2),
+                #                                                         losses.covariance_regulariser(x_latent_3),
+                #                                                         losses.covariance_regulariser(x_latent_4),
+                #                                                         losses.covariance_regulariser(x_latent_5),
+                #                                                         losses.covariance_regulariser(x_latent_6)]),
+                #                                    parameters.kernel_regulariser_weight *
+                #                                    tf.math.reduce_mean(model.losses[::2]),
+                #                                    parameters.activity_regulariser_weight *
+                #                                    tf.math.reduce_mean(model.losses[1::2])])
+
+                current_loss = loss(y_train_iteration, x_prediction)
+
+                current_loss = optimiser.get_scaled_loss(current_loss)
 
         loss_list.append(current_loss)
 
@@ -648,7 +725,7 @@ def train_step(model, optimiser, loss, x_train_iteration, y_train_iteration, los
     gc.collect()
     tf.keras.backend.clear_session()
 
-    # return model, loss_list, uncertainty, previous_model_weight_list, previous_optimiser_weight_list
+    # return model, loss_list, x_prediction_uncertainty, previous_model_weight_list, previous_optimiser_weight_list
     return model, loss_list, tf.constant(0.0, dtype=tf.float32), previous_model_weight_list, previous_optimiser_weight_list
 
 
@@ -666,18 +743,53 @@ def get_bayesian_test_prediction(model, x_train_iteration, bayesian_iteration, b
         gc.collect()
         tf.keras.backend.clear_session()
 
-    x_prediction = tf.math.reduce_mean(x_prediction_list, axis=0)
+    x_prediction = []
+    x_latent = []
 
-    x_prediction_uncertainty_volume = tf.math.reduce_std(x_prediction_list, axis=0)
+    x_latent_0 = []
+    x_latent_1 = []
+    x_latent_2 = []
+    x_latent_3 = []
+    x_latent_4 = []
+    x_latent_5 = []
+    x_latent_6 = []
+
+    for i in range(len(x_prediction_list)):
+        x_prediction.append(x_prediction_list[i][0])
+        x_latent.append(x_prediction_list[i][8])
+
+        x_latent_0.append(x_prediction_list[i][1])
+        x_latent_1.append(x_prediction_list[i][2])
+        x_latent_2.append(x_prediction_list[i][3])
+        x_latent_3.append(x_prediction_list[i][4])
+        x_latent_4.append(x_prediction_list[i][5])
+        x_latent_5.append(x_prediction_list[i][6])
+        x_latent_6.append(x_prediction_list[i][7])
+
+    x_prediction_uncertainty_volume = tf.math.reduce_std(x_prediction, axis=0)
+    x_latent_uncertainty_volume = tf.math.reduce_std(x_latent, axis=0)
+
+    x_prediction = tf.math.reduce_mean(x_prediction, axis=0)
+    x_latent = tf.math.reduce_mean(x_latent, axis=0)
+
+    x_latent_0 = tf.math.reduce_mean(x_latent_0, axis=0)
+    x_latent_1 = tf.math.reduce_mean(x_latent_1, axis=0)
+    x_latent_2 = tf.math.reduce_mean(x_latent_2, axis=0)
+    x_latent_3 = tf.math.reduce_mean(x_latent_3, axis=0)
+    x_latent_4 = tf.math.reduce_mean(x_latent_4, axis=0)
+    x_latent_5 = tf.math.reduce_mean(x_latent_5, axis=0)
+    x_latent_6 = tf.math.reduce_mean(x_latent_6, axis=0)
+
     x_prediction_uncertainty = tf.math.reduce_mean(x_prediction_uncertainty_volume)
+    x_latent_uncertainty = tf.math.reduce_mean(x_latent_uncertainty_volume)
 
-    return x_prediction, x_prediction_uncertainty, x_prediction_uncertainty_volume
+    return x_prediction, x_prediction_uncertainty, x_prediction_uncertainty_volume, x_latent, x_latent_uncertainty, x_latent_uncertainty_volume, x_latent_0, x_latent_1, x_latent_2, x_latent_3, x_latent_4, x_latent_5, x_latent_6
 
 
 def test_step(model, loss, x_train_iteration, y_train_iteration, loss_mask_train_iteration, evaluation_loss_list):
     print("test_step")
 
-    x_prediction, x_prediction_uncertainty, x_prediction_uncertainty_volume = \
+    x_prediction, x_prediction_uncertainty, x_prediction_uncertainty_volume, x_latent, x_latent_uncertainty, x_latent_uncertainty_volume, x_latent_0, x_latent_1, x_latent_2, x_latent_3, x_latent_4, x_latent_5, x_latent_6 = \
         get_bayesian_test_prediction(model, x_train_iteration, parameters.bayesian_iterations,
                                      parameters.bayesian_test_bool)
 
@@ -733,7 +845,7 @@ def output_window_predictions(x_prediction, y_train_iteration, gt_prediction, lo
                               current_output_path, j):
     print("output_window_predictions")
 
-    x_prediction, _ = preprocessing.data_preprocessing([x_prediction], "numpy", preprocessing_steps)
+    # x_prediction, _ = preprocessing.data_preprocessing([x_prediction], "numpy", preprocessing_steps)
     x_prediction = np.squeeze(preprocessing.data_downsampling_crop([x_prediction], "numpy", window_input_shape)[0])
 
     x_prediction_uncertainty_volume = np.squeeze(preprocessing.data_downsampling_crop([x_prediction_uncertainty_volume],
@@ -751,7 +863,7 @@ def output_window_predictions(x_prediction, y_train_iteration, gt_prediction, lo
         current_x_prediction = x_prediction
 
     if gt_prediction is not None:
-        gt_prediction, _ = preprocessing.data_preprocessing([gt_prediction], "numpy", preprocessing_steps)
+        # gt_prediction, _ = preprocessing.data_preprocessing([gt_prediction], "numpy", preprocessing_steps)
         gt_prediction = np.squeeze(preprocessing.data_downsampling_crop([gt_prediction], "numpy",
                                                                         window_input_shape)[0])
 
@@ -764,7 +876,7 @@ def output_window_predictions(x_prediction, y_train_iteration, gt_prediction, lo
             [losses.correlation_coefficient_accuracy(current_gt_prediction, current_x_prediction).numpy(),
              losses.scale_accuracy(current_gt_prediction, current_x_prediction).numpy()]
     else:
-        y_train_iteration, _ = preprocessing.data_preprocessing([y_train_iteration], "numpy", preprocessing_steps)
+        # y_train_iteration, _ = preprocessing.data_preprocessing([y_train_iteration], "numpy", preprocessing_steps)
         y_train_iteration = np.squeeze(preprocessing.data_downsampling_crop([y_train_iteration], "numpy",
                                                                             window_input_shape)[0])
 
@@ -897,7 +1009,7 @@ def train_model():
 
     total_current_accuracy = None
     total_gt_current_accuracy = None
-    max_accuracy = tf.cast(0.0, dtype=tf.float32)
+    max_accuracy = tf.cast(0.0, dtype=tf.float64)
     max_accuracy_iteration = 0
 
     total_iterations = 0
@@ -951,26 +1063,33 @@ def train_model():
                 with gzip.GzipFile(y[i], "r") as file:
                     y_train_iteration = np.asarray([np.load(file)[j]])
 
-                if float_sixteen_bool:
-                    x_train_iteration = x_train_iteration.astype(np.float16)
-                    y_train_iteration = y_train_iteration.astype(np.float16)
-                else:
-                    x_train_iteration = x_train_iteration.astype(np.float32)
-                    y_train_iteration = y_train_iteration.astype(np.float32)
-
                 x_train_iteration = tf.convert_to_tensor(x_train_iteration)
                 y_train_iteration = tf.convert_to_tensor(y_train_iteration)
+
+                if float_sixteen_bool:
+                    if bfloat_sixteen_bool:
+                        x_train_iteration = tf.cast(x_train_iteration, dtype=tf.bfloat16)
+                        y_train_iteration = tf.cast(y_train_iteration, dtype=tf.bfloat16)
+                    else:
+                        x_train_iteration = tf.cast(x_train_iteration, dtype=tf.float16)
+                        y_train_iteration = tf.cast(y_train_iteration, dtype=tf.float16)
+                else:
+                    x_train_iteration = tf.cast(x_train_iteration, dtype=tf.float32)
+                    y_train_iteration = tf.cast(y_train_iteration, dtype=tf.float32)
 
                 if gt is not None:
                     with gzip.GzipFile(gt[i], "r") as file:
                         gt_prediction = np.asarray([np.load(file)[j]])
 
-                    if float_sixteen_bool:
-                        gt_prediction = gt_prediction.astype(np.float16)
-                    else:
-                        gt_prediction = gt_prediction.astype(np.float32)
-
                     gt_prediction = tf.convert_to_tensor(gt_prediction)
+
+                    if float_sixteen_bool:
+                        if bfloat_sixteen_bool:
+                            gt_prediction = tf.cast(gt_prediction, dtype=tf.bfloat16)
+                        else:
+                            gt_prediction = tf.cast(gt_prediction, dtype=tf.float16)
+                    else:
+                        gt_prediction = tf.cast(gt_prediction, dtype=tf.float32)
                 else:
                     gt_prediction = None
 
@@ -978,12 +1097,15 @@ def train_model():
                     with gzip.GzipFile(loss_mask[i], "r") as file:
                         loss_mask_train_iteration = np.asarray([np.load(file)[j]])
 
-                    if float_sixteen_bool:
-                        loss_mask_train_iteration = loss_mask_train_iteration.astype(np.float16)
-                    else:
-                        loss_mask_train_iteration = loss_mask_train_iteration.astype(np.float32)
-
                     loss_mask_train_iteration = tf.convert_to_tensor(loss_mask_train_iteration)
+
+                    if float_sixteen_bool:
+                        if bfloat_sixteen_bool:
+                            loss_mask_train_iteration = tf.cast(loss_mask_train_iteration, dtype=tf.bfloat16)
+                        else:
+                            loss_mask_train_iteration = tf.cast(loss_mask_train_iteration, dtype=tf.float16)
+                    else:
+                        loss_mask_train_iteration = tf.cast(loss_mask_train_iteration, dtype=tf.float32)
                 else:
                     loss_mask_train_iteration = None
 
@@ -1014,7 +1136,8 @@ def train_model():
                     if gt is None:
                         current_accuracy_nan_patience = 0
 
-                total_current_accuracy = tf.math.reduce_mean([current_accuracy[0], current_accuracy[1]])
+                total_current_accuracy = tf.math.reduce_mean([tf.cast(current_accuracy[0], dtype=tf.float64),
+                                                              tf.cast(current_accuracy[1], dtype=tf.float64)])
 
                 window_evaluation_accuracy_list.append(total_current_accuracy)
 
@@ -1045,7 +1168,8 @@ def train_model():
                     else:
                         current_accuracy_nan_patience = 0
 
-                    total_gt_current_accuracy = tf.math.reduce_mean([gt_accuracy[0], gt_accuracy[1]])
+                    total_gt_current_accuracy = tf.math.reduce_mean([tf.cast(gt_accuracy[0], dtype=tf.float64),
+                                                                     tf.cast(gt_accuracy[1], dtype=tf.float64)])
 
                     print("GT loss:\t{0:<20}\tGT accuracy:\t{1:<20}\tGT scale accuracy:\t{2:<20}\tGT total accuracy:\t{3:<20}\tGT uncertainty:\t{4:<20}".format(str(window_evaluation_loss_list[-1].numpy()), str(gt_accuracy[0].numpy()), str(gt_accuracy[1].numpy()), str(total_gt_current_accuracy.numpy()), str(x_prediction_uncertainty.numpy())))
 
@@ -1096,13 +1220,13 @@ def train_model():
 
                 total_subiterations = total_subiterations + 1
 
-            patient_loss_list.append(np.median(np.array(window_loss_list)))
-            patient_evaluation_loss_list.append(np.median(np.array(window_evaluation_loss_list)))
-            patient_evaluation_accuracy_list.append(np.median(np.array(window_evaluation_accuracy_list)))
+            patient_loss_list.append(np.mean(np.array(window_loss_list)))
+            patient_evaluation_loss_list.append(np.mean(np.array(window_evaluation_loss_list)))
+            patient_evaluation_accuracy_list.append(np.mean(np.array(window_evaluation_accuracy_list)))
 
-        loss_list.append(np.median(np.array(patient_loss_list)))
-        evaluation_loss_list.append(np.median(np.array(patient_evaluation_loss_list)))
-        evaluation_accuracy_list.append(np.median(np.array(patient_evaluation_accuracy_list)))
+        loss_list.append(np.mean(np.array(patient_loss_list)))
+        evaluation_loss_list.append(np.mean(np.array(patient_evaluation_loss_list)))
+        evaluation_accuracy_list.append(np.mean(np.array(patient_evaluation_accuracy_list)))
 
         evaluation_loss_list_len = len(evaluation_loss_list)
 
@@ -1187,26 +1311,33 @@ def train_model():
             with gzip.GzipFile(y[i], "r") as file:
                 y_train_iteration = np.asarray([np.load(file)[j]])
 
-            if float_sixteen_bool:
-                x_train_iteration = x_train_iteration.astype(np.float16)
-                y_train_iteration = y_train_iteration.astype(np.float16)
-            else:
-                x_train_iteration = x_train_iteration.astype(np.float32)
-                y_train_iteration = y_train_iteration.astype(np.float32)
-
             x_train_iteration = tf.convert_to_tensor(x_train_iteration)
             y_train_iteration = tf.convert_to_tensor(y_train_iteration)
+
+            if float_sixteen_bool:
+                if bfloat_sixteen_bool:
+                    x_train_iteration = tf.cast(x_train_iteration, dtype=tf.bfloat16)
+                    y_train_iteration = tf.cast(y_train_iteration, dtype=tf.bfloat16)
+                else:
+                    x_train_iteration = tf.cast(x_train_iteration, dtype=tf.float16)
+                    y_train_iteration = tf.cast(y_train_iteration, dtype=tf.float16)
+            else:
+                x_train_iteration = tf.cast(x_train_iteration, dtype=tf.float32)
+                y_train_iteration = tf.cast(y_train_iteration, dtype=tf.float32)
 
             if gt is not None:
                 with gzip.GzipFile(gt[i], "r") as file:
                     gt_prediction = np.asarray([np.load(file)[j]])
 
-                if float_sixteen_bool:
-                    gt_prediction = gt_prediction.astype(np.float16)
-                else:
-                    gt_prediction = gt_prediction.astype(np.float32)
-
                 gt_prediction = tf.convert_to_tensor(gt_prediction)
+
+                if float_sixteen_bool:
+                    if bfloat_sixteen_bool:
+                        gt_prediction = tf.cast(gt_prediction, dtype=tf.bfloat16)
+                    else:
+                        gt_prediction = tf.cast(gt_prediction, dtype=tf.float16)
+                else:
+                    gt_prediction = tf.cast(gt_prediction, dtype=tf.float32)
             else:
                 gt_prediction = None
 
@@ -1214,16 +1345,19 @@ def train_model():
                 with gzip.GzipFile(loss_mask[i], "r") as file:
                     loss_mask_train_iteration = np.asarray([np.load(file)[j]])
 
-                if float_sixteen_bool:
-                    loss_mask_train_iteration = loss_mask_train_iteration.astype(np.float16)
-                else:
-                    loss_mask_train_iteration = loss_mask_train_iteration.astype(np.float32)
-
                 loss_mask_train_iteration = tf.convert_to_tensor(loss_mask_train_iteration)
+
+                if float_sixteen_bool:
+                    if bfloat_sixteen_bool:
+                        loss_mask_train_iteration = tf.cast(loss_mask_train_iteration, dtype=tf.bfloat16)
+                    else:
+                        loss_mask_train_iteration = tf.cast(loss_mask_train_iteration, dtype=tf.float16)
+                else:
+                    loss_mask_train_iteration = tf.cast(loss_mask_train_iteration, dtype=tf.float32)
             else:
                 loss_mask_train_iteration = None
 
-            x_prediction, x_prediction_uncertainty, x_prediction_uncertainty_volume = \
+            x_prediction, x_prediction_uncertainty, x_prediction_uncertainty_volume, x_latent, x_latent_uncertainty, x_latent_uncertainty_volume, x_latent_0, x_latent_1, x_latent_2, x_latent_3, x_latent_4, x_latent_5, x_latent_6 = \
                 get_bayesian_test_prediction(model, x_train_iteration, parameters.bayesian_iterations,
                                              parameters.bayesian_output_bool)
 

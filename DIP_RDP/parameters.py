@@ -6,11 +6,11 @@
 import os
 
 
-# data_path = "{0}/DIP_RDP_data/static_thorax_simulation/".format(os.path.dirname(os.getcwd()))
-# output_path = "{0}/output/static_thorax_simulation/".format(os.getcwd())
+data_path = "{0}/DIP_RDP_data/static_thorax_simulation/".format(os.path.dirname(os.getcwd()))
+output_path = "{0}/output/static_thorax_simulation/".format(os.getcwd())
 
-data_path = "{0}/DIP_RDP_data/dynamic_thorax_simulation/".format(os.path.dirname(os.getcwd()))
-output_path = "{0}/output/dynamic_thorax_simulation/".format(os.getcwd())
+# data_path = "{0}/DIP_RDP_data/dynamic_thorax_simulation/".format(os.path.dirname(os.getcwd()))
+# output_path = "{0}/output/dynamic_thorax_simulation/".format(os.getcwd())
 
 noise_path = None
 
@@ -31,8 +31,9 @@ input_poisson_weight = 0.0
 model_path = "{0}/model.pkl".format(output_path)
 
 layer_layers = [2, 2, 2, 2, 2, 2, 2, 2]
-layer_depth = [2, 4, 8, 16, 32, 64, 128, 256]
+layer_depth = [1, 2, 4, 8, 16, 32, 64, 128]
 layer_groups = [1, 1, 1, 1, 1, 1, 1, 1]
+latent_depth = layer_depth[-1]
 
 
 new_model_patient_bool = True
@@ -46,7 +47,7 @@ jitter_magnitude = 1
 
 elastic_jitter_bool = False
 elastic_jitter_sigma = 0.0
-elastic_jitter_points_iterations = 8
+elastic_jitter_points_iterations = 4
 
 
 input_gaussian_sigma = 0.0
@@ -54,18 +55,22 @@ skip_gaussian_sigma = 0.0
 layer_gaussian_sigma = 0.0
 
 
-dropout = 0.5
+dropout = 0.0
 
 bayesian_test_bool = False
-bayesian_output_bool = True
-bayesian_iterations = 32
+bayesian_output_bool = False
+bayesian_iterations = 1
 
 if bayesian_output_bool and bayesian_iterations < 2:
     bayesian_iterations = 2
 
 
+epsilon = 1e-07
+
 total_variation_bool = True
 total_variation_weight = 1e-02
+
+covariance_weight = 0.0
 
 scale_loss_weight = 0.0
 scale_accuracy_scale = 1e00

@@ -347,6 +347,55 @@ def data_downsampling_crop(data, data_type, new_resolution=None):
     return data
 
 
+# https://stackoverflow.com/questions/44865023/how-can-i-create-a-circular-mask-for-a-numpy-array
+def create_circular_mask(height, width, centre=None, radius=None):
+    print("create_circular_mask")
+
+    # use the middle of the image
+    if centre is None:
+        centre = (int(round(width / 2.0)), int(round(height / 2.0)))
+
+    # use the smallest distance between the center and image walls
+    if radius is None:
+        radius = min(centre[0], centre[1], width - centre[0], height - centre[1])
+    else:
+        if radius < 0.0:
+            radius = min(centre[0], centre[1], int(round((width - centre[0]) + radius)),
+                         int(round((height - centre[1]) + radius)))
+
+    y, x = np.ogrid[: height, : width]
+    dist_from_centre = np.sqrt(((x - centre[0]) ** 2.0) + ((y - centre[1]) ** 2.0))
+
+    mask = dist_from_centre <= radius
+
+    return mask
+
+
+def mask_fov(array):
+    print("mask_fov")
+
+    array_shape = np.shape(array)
+
+    if len(array_shape) > 3:
+        mask = np.expand_dims(np.expand_dims(create_circular_mask(array_shape[1], array_shape[2]), axis=0), axis=-1)
+
+        for i in range(array_shape[3]):
+            masked_img = array[:, :, :, i].copy()
+            masked_img[~ mask] = 0.0
+
+            array[:, :, :, i] = masked_img
+    else:
+        mask = create_circular_mask(array_shape[0], array_shape[1])
+
+        for i in range(array_shape[2]):
+            masked_img = array[:, :, i].copy()
+            masked_img[~ mask] = 0.0
+
+            array[:, :, i] = masked_img
+
+    return array
+
+
 def data_preprocessing(data, data_type, preprocessing_steps=None):
     print("data_preprocessing")
 
@@ -363,6 +412,8 @@ def data_preprocessing(data, data_type, preprocessing_steps=None):
                 else:
                     data_copy = None
 
+            data_copy = mask_fov(data_copy)
+
             data_copy = data_copy.reshape(-1, 1)
 
             preprocessing_steps.partial_fit(data_copy)
@@ -376,6 +427,8 @@ def data_preprocessing(data, data_type, preprocessing_steps=None):
                     data_copy = data[i].copy()
                 else:
                     data_copy = None
+
+            data_copy = mask_fov(data_copy)
 
             data_copy_shape = data_copy.shape
             data_copy = data_copy.reshape(-1, 1)
@@ -524,7 +577,7 @@ def introduce_jitter(x_train_iteration, y_train_iteration, loss_mask_train_itera
         if parameters.elastic_jitter_sigma > 0.0:
             points = np.asarray(x_train_iteration.shape.as_list())
 
-            for i in range(parameters.elastic_jitter_points_iterations):
+            for i in range(len(parameters.layer_depth[:-1]) - parameters.elastic_jitter_points_iterations):
                 points = np.ceil(points / 2.0)
 
             points = points.astype(np.int).tolist()
@@ -532,19 +585,25 @@ def introduce_jitter(x_train_iteration, y_train_iteration, loss_mask_train_itera
             [x_train_iteration_jitter, y_train_iteration_jitter, loss_mask_train_iteration_jitter] = \
                 elasticdeform.deform_random_grid([x_train_iteration_jitter, y_train_iteration_jitter,
                                                   loss_mask_train_iteration_jitter],
-                                                 sigma=parameters.jitter_sigma, points=points, mode="edge")  # noqa
-
-    if DIP_RDP_iterative.float_sixteen_bool:
-        x_train_iteration_jitter = x_train_iteration_jitter.astype(np.float16)
-        y_train_iteration_jitter = y_train_iteration_jitter.astype(np.float16)
-        loss_mask_train_iteration_jitter = loss_mask_train_iteration_jitter.astype(np.float16)
-    else:
-        x_train_iteration_jitter = x_train_iteration_jitter.astype(np.float32)
-        y_train_iteration_jitter = y_train_iteration_jitter.astype(np.float32)
-        loss_mask_train_iteration_jitter = loss_mask_train_iteration_jitter.astype(np.float32)
+                                                 sigma=parameters.elastic_jitter_sigma, points=points, order=1,  # noqa
+                                                 mode="nearest")
 
     x_train_iteration_jitter = tf.convert_to_tensor(x_train_iteration_jitter)
     y_train_iteration_jitter = tf.convert_to_tensor(y_train_iteration_jitter)
     loss_mask_train_iteration_jitter = tf.convert_to_tensor(loss_mask_train_iteration_jitter)
+
+    if DIP_RDP_iterative.float_sixteen_bool:
+        if DIP_RDP_iterative.bfloat_sixteen_bool:
+            x_train_iteration_jitter = tf.cast(x_train_iteration_jitter, dtype=tf.bfloat16)
+            y_train_iteration_jitter = tf.cast(y_train_iteration_jitter, dtype=tf.bfloat16)
+            loss_mask_train_iteration_jitter = tf.cast(loss_mask_train_iteration_jitter, dtype=tf.bfloat16)
+        else:
+            x_train_iteration_jitter = tf.cast(x_train_iteration_jitter, dtype=tf.float16)
+            y_train_iteration_jitter = tf.cast(y_train_iteration_jitter, dtype=tf.float16)
+            loss_mask_train_iteration_jitter = tf.cast(loss_mask_train_iteration_jitter, dtype=tf.float16)
+    else:
+        x_train_iteration_jitter = tf.cast(x_train_iteration_jitter, dtype=tf.float32)
+        y_train_iteration_jitter = tf.cast(y_train_iteration_jitter, dtype=tf.float32)
+        loss_mask_train_iteration_jitter = tf.cast(loss_mask_train_iteration_jitter, dtype=tf.float32)
 
     return x_train_iteration_jitter, y_train_iteration_jitter, loss_mask_train_iteration_jitter
