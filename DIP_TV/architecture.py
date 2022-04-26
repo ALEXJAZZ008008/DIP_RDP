@@ -125,9 +125,9 @@ def get_model(input_shape):
 
     model = k.Model(inputs=input_x, outputs=[output_x])
 
-    if parameters.total_variation_bool:
+    if parameters.total_variation_bool and parameters.total_variation_weight > 0.0:
         model.compile(optimizer=tf.keras.optimizers.SGD(),
-                      loss={"output": losses.mean_square_error_total_variation_loss}, loss_weights=[1.0],
+                      loss={"output": losses.mean_squared_error_total_variation_loss}, loss_weights=[1.0],
                       metrics=[losses.accuracy_correlation_coefficient])
     else:
         model.compile(optimizer=tf.keras.optimizers.SGD(),

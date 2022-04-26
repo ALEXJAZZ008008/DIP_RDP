@@ -9,6 +9,7 @@ import shutil
 import random
 import numpy as np
 import tensorflow as tf
+# from numba import cuda
 import matplotlib.pyplot as plt
 import nibabel as nib
 import gzip
@@ -39,6 +40,39 @@ if reproducible_bool:
     # tf.compat.v1.keras.backend.set_session(sess)
 else:
     random.seed()
+
+# device = cuda.get_current_device()
+
+float_sixteen_bool = True  # set the network to use float16 data
+bfloat_sixteen_bool = False
+cpu_bool = False  # if using CPU, set to true: disables mixed precision computation
+
+# mixed precision float16 computation allows the network to use both float16 and float32 where necessary,
+# this improves performance on the GPU.
+if float_sixteen_bool and not cpu_bool:
+    if bfloat_sixteen_bool:
+        policy = tf.keras.mixed_precision.Policy("mixed_bfloat16")
+    else:
+        policy = tf.keras.mixed_precision.Policy("mixed_float16")
+else:
+    float_sixteen_bool = False
+    bfloat_sixteen_bool = False
+
+    policy = tf.keras.mixed_precision.Policy(tf.dtypes.float32.name)
+
+tf.keras.mixed_precision.set_global_policy(policy)
+
+
+# gpus = tf.config.list_physical_devices("GPU")
+
+# if gpus:
+#     for gpu in gpus:
+#         tf.config.experimental.set_memory_growth(gpu, True)
+
+#     os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
+
+
+# os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 
 
 import parameters
@@ -139,6 +173,7 @@ def get_train_data():
         os.makedirs(y_train_output_path, mode=0o770)
 
     current_volume = None
+    high_resolution_input_shape = None
     full_current_shape = None
     current_shape = None
     windowed_full_input_axial_size = None
@@ -146,6 +181,19 @@ def get_train_data():
     for i in range(len(y_files)):
         current_volume = nib.load(y_files[i])
         current_array = current_volume.get_fdata()
+
+        if high_resolution_input_shape is None:
+            high_resolution_input_shape = current_array.shape
+
+        if parameters.data_crop_bool:
+            current_array = \
+                np.squeeze(preprocessing.data_downsampling_crop([current_array], "numpy",
+                                                                [current_array.shape[0] -
+                                                                 parameters.data_crop_amount[0],
+                                                                 current_array.shape[1] -
+                                                                 parameters.data_crop_amount[1],
+                                                                 current_array.shape[2] -
+                                                                 parameters.data_crop_amount[2]])[0])
 
         if full_current_shape is None:
             full_current_shape = current_array.shape
@@ -158,7 +206,7 @@ def get_train_data():
         current_y_train_path = "{0}/{1}.npy".format(y_train_output_path, str(i))
 
         with gzip.GzipFile(current_y_train_path, "w") as file:
-            np.save(file, current_array)
+            np.save(file, current_array)  # noqa
 
         y.append(current_y_train_path)
 
@@ -167,7 +215,7 @@ def get_train_data():
         current_x_train_path = "{0}/{1}.npy".format(x_train_output_path, str(i))
 
         with gzip.GzipFile(current_x_train_path, "w") as file:
-            np.save(file, current_array)
+            np.save(file, current_array)  # noqa
 
         x.append(current_x_train_path)
 
@@ -190,12 +238,22 @@ def get_train_data():
         for i in range(len(gt_files)):
             current_array = nib.load(gt_files[i]).get_fdata()
 
+            if parameters.data_crop_bool:
+                current_array = \
+                    np.squeeze(preprocessing.data_downsampling_crop([current_array], "numpy",
+                                                                    [current_array.shape[0] -
+                                                                     parameters.data_crop_amount[0],
+                                                                     current_array.shape[1] -
+                                                                     parameters.data_crop_amount[1],
+                                                                     current_array.shape[2] -
+                                                                     parameters.data_crop_amount[2]])[0])
+
             current_array, _ = get_data_windows(current_array)
 
             current_gt_train_path = "{0}/{1}.npy".format(gt_train_output_path, str(i))
 
             with gzip.GzipFile(current_gt_train_path, "w") as file:
-                np.save(file, current_array)
+                np.save(file, current_array)  # noqa
 
             gt.append(current_gt_train_path)
 
@@ -203,24 +261,24 @@ def get_train_data():
     else:
         gt = None
 
-    return x, y, example_data, current_volume, full_current_shape, windowed_full_input_axial_size, current_shape, gt
+    return x, y, example_data, current_volume, high_resolution_input_shape, full_current_shape, windowed_full_input_axial_size, current_shape, gt
 
 
 def get_preprocessed_train_data():
     print("get_preprocessed_train_data")
 
-    x, y, example_data, input_volume, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt = \
+    x, y, example_data, input_volume, high_resolution_input_shape, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt = \
         get_train_data()
 
     x = preprocessing.data_upsample(x, "path")
     y = preprocessing.data_upsample(y, "path")
     gt = preprocessing.data_upsample(gt, "path")
 
-    x, _ = preprocessing.data_preprocessing(x, "path")
-    y, input_preprocessing = preprocessing.data_preprocessing(y, "path")
-    gt, _ = preprocessing.data_preprocessing(gt, "path")
+    x, x_input_preprocessing = preprocessing.data_preprocessing(x, "path")
+    y, y_input_preprocessing = preprocessing.data_preprocessing(y, "path")
+    gt, gt_input_preprocessing = preprocessing.data_preprocessing(gt, "path")
 
-    return x, y, example_data, input_volume, full_input_shape, windowed_full_input_axial_size, window_input_shape, input_preprocessing, gt
+    return x, y, example_data, input_volume, high_resolution_input_shape, full_input_shape, windowed_full_input_axial_size, window_input_shape, x_input_preprocessing, y_input_preprocessing, gt_input_preprocessing, gt
 
 
 # https://stackoverflow.com/questions/43137288/how-to-determine-needed-memory-of-keras-model
@@ -275,11 +333,12 @@ def get_evaluation_score(x_prediction, gt):
     return accuracy
 
 
-def output_window_predictions(x_prediction, input_volume, window_input_shape, input_preprocessing, current_output_path,
+def output_window_predictions(x_prediction, input_volume, window_input_shape, x_input_preprocessing,
+                              y_input_preprocessing, gt_input_preprocessing, current_output_path,
                               i, j):
     print("output_window_predictions")
 
-    x_prediction = preprocessing.data_preprocessing([x_prediction], "numpy", [input_preprocessing[i]])[0]
+    x_prediction = preprocessing.data_preprocessing([x_prediction], "numpy", y_input_preprocessing)[0][0]
     x_prediction = np.squeeze(preprocessing.data_upsample([x_prediction], "numpy", window_input_shape)[0])
 
     output_volume = nib.Nifti1Image(x_prediction, np.eye(4), nib.Nifti1Header())
@@ -291,7 +350,7 @@ def output_window_predictions(x_prediction, input_volume, window_input_shape, in
 
 
 def output_patient_time_point_predictions(window_data_paths, example_data, windowed_full_input_axial_size,
-                                          full_input_shape, current_output_path, i):
+                                          high_resolution_input_shape, full_input_shape, current_output_path, i):
     print("output_patient_time_point_predictions")
 
     if len(window_data_paths) > 1:
@@ -322,6 +381,8 @@ def output_patient_time_point_predictions(window_data_paths, example_data, windo
         output_array = nib.load(window_data_paths[0]).get_fdata()
 
     output_array = np.squeeze(preprocessing.data_upsample([output_array], "numpy", full_input_shape)[0])
+    output_array = np.squeeze(preprocessing.data_upsample_pad([output_array], "numpy", high_resolution_input_shape,
+                                                              "constant")[0])
 
     output_volume = nib.Nifti1Image(output_array, example_data.affine, example_data.header)
 
@@ -335,7 +396,7 @@ def train_model():
     print("train_model")
 
     # get data and lables
-    x, y, example_data, input_volume, full_input_shape, windowed_full_input_axial_size, window_input_shape, input_preprocessing, gt = \
+    x, y, example_data, input_volume, high_resolution_input_shape, full_input_shape, windowed_full_input_axial_size, window_input_shape, x_input_preprocessing, y_input_preprocessing, gt_input_preprocessing, gt = \
         get_preprocessed_train_data()
 
     for i in range(len(y)):
@@ -348,7 +409,7 @@ def train_model():
             os.makedirs(patient_output_path, mode=0o770)
 
         with gzip.GzipFile(x[i], "r") as file:
-            number_of_windows = np.load(file).shape[0]
+            number_of_windows = np.load(file).shape[0]  # noqa
 
         current_window_data_paths = []
 
@@ -368,7 +429,7 @@ def train_model():
                 os.makedirs(plot_output_path, mode=0o770)
 
             with gzip.GzipFile(x[i], "r") as file:
-                data_shape = np.load(file)[j].shape
+                data_shape = np.load(file)[j].shape  # noqa
 
             model = architecture.get_model(data_shape)
             model.summary()
@@ -379,17 +440,36 @@ def train_model():
                                       show_dtype=True, show_layer_names=True, expand_nested=True)
 
             with gzip.GzipFile(x[i], "r") as file:
-                x_train_iteration = np.asarray([np.load(file)[j]])
+                x_train_iteration = np.asarray([np.load(file)[j]])  # noqa
 
             with gzip.GzipFile(y[i], "r") as file:
-                y_train_iteration = np.asarray([np.load(file)[j]])
+                y_train_iteration = np.asarray([np.load(file)[j]])  # noqa
 
-            x_train_iteration = x_train_iteration.astype(np.float32)
-            y_train_iteration = y_train_iteration.astype(np.float32)
+            x_train_iteration = tf.convert_to_tensor(x_train_iteration)
+            y_train_iteration = tf.convert_to_tensor(y_train_iteration)
+
+            if float_sixteen_bool:
+                if bfloat_sixteen_bool:
+                    x_train_iteration = tf.cast(x_train_iteration, dtype=tf.bfloat16)
+                    y_train_iteration = tf.cast(y_train_iteration, dtype=tf.bfloat16)
+                else:
+                    x_train_iteration = tf.cast(x_train_iteration, dtype=tf.float16)
+                    y_train_iteration = tf.cast(y_train_iteration, dtype=tf.float16)
+            else:
+                x_train_iteration = tf.cast(x_train_iteration, dtype=tf.float32)
+                y_train_iteration = tf.cast(y_train_iteration, dtype=tf.float32)
 
             if gt is not None:
                 with gzip.GzipFile(gt[i], "r") as file:
-                    gt_prediction = np.asarray([np.load(file)[j]])
+                    gt_prediction = np.asarray([np.load(file)[j]])  # noqa
+
+                if float_sixteen_bool:
+                    if bfloat_sixteen_bool:
+                        gt_prediction = tf.cast(gt_prediction, dtype=tf.bfloat16)
+                    else:
+                        gt_prediction = tf.cast(gt_prediction, dtype=tf.float16)
+                else:
+                    gt_prediction = tf.cast(gt_prediction, dtype=tf.float32)
             else:
                 gt_prediction = None
 
@@ -484,10 +564,12 @@ def train_model():
             print("Accuracy loss:\t{0:<20}".format(str(accuracy_loss)))
 
             current_window_data_paths.append(output_window_predictions(x_prediction, input_volume, window_input_shape,
-                                                                       input_preprocessing, window_output_path, i, j))
+                                                                       x_input_preprocessing, y_input_preprocessing,
+                                                                       gt_input_preprocessing, window_output_path, i,
+                                                                       j))
 
         output_patient_time_point_predictions(current_window_data_paths, example_data, windowed_full_input_axial_size,
-                                              full_input_shape, patient_output_path, i)
+                                              high_resolution_input_shape, full_input_shape, patient_output_path, i)
 
 
 def main():
@@ -507,12 +589,12 @@ def main():
     if os.path.exists(logfile_path):
         os.remove(logfile_path)
 
-    import transcript
-    logfile = transcript.transcript_start(logfile_path)
+    # import transcript
+    # logfile = transcript.transcript_start(logfile_path)
 
     train_model()
 
-    transcript.transcript_stop(logfile)
+    # transcript.transcript_stop(logfile)
 
     return True
 

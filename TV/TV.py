@@ -143,6 +143,7 @@ def get_train_data():
     if not os.path.exists(y_train_output_path):
         os.makedirs(y_train_output_path, mode=0o770)
 
+    high_resolution_input_shape = None
     full_current_shape = None
     windowed_full_input_axial_size = None
     current_shape = None
@@ -151,14 +152,23 @@ def get_train_data():
         current_volume = nib.load(y_files[i])
         current_array = current_volume.get_fdata()
 
-        if parameters.data_window_bool:
-            if full_current_shape is None:
-                full_current_shape = current_array.shape
+        if high_resolution_input_shape is None:
+            high_resolution_input_shape = current_array.shape
 
-        current_array, windowed_full_input_axial_size = get_data_windows(current_array)
+        if parameters.data_crop_bool:
+            current_array = \
+                np.squeeze(preprocessing.data_downsampling_crop([current_array], "numpy",
+                                                                [current_array.shape[0] -
+                                                                 parameters.data_crop_amount[0],
+                                                                 current_array.shape[1] -
+                                                                 parameters.data_crop_amount[1],
+                                                                 current_array.shape[2] -
+                                                                 parameters.data_crop_amount[2]])[0])
 
         if full_current_shape is None:
-            full_current_shape = current_array.shape[1:]
+            full_current_shape = current_array.shape
+
+        current_array, windowed_full_input_axial_size = get_data_windows(current_array)
 
         if current_shape is None:
             current_shape = current_array[0].shape
@@ -166,14 +176,14 @@ def get_train_data():
         current_y_train_path = "{0}/{1}.npy.gz".format(y_train_output_path, str(i))
 
         with gzip.GzipFile(current_y_train_path, "w") as file:
-            np.save(file, current_array)
+            np.save(file, current_array)  # noqa
 
         y.append(current_y_train_path)
 
         current_x_train_path = "{0}/{1}.npy.gz".format(x_train_output_path, str(i))
 
         with gzip.GzipFile(current_x_train_path, "w") as file:
-            np.save(file, current_array)
+            np.save(file, current_array)  # noqa
 
         x.append(current_x_train_path)
 
@@ -194,12 +204,21 @@ def get_train_data():
         for i in range(len(gt_files)):
             current_array = nib.load(gt_files[i]).get_fdata()
 
+            current_array = \
+                np.squeeze(preprocessing.data_downsampling_crop([current_array], "numpy",
+                                                                [current_array.shape[0] -
+                                                                 parameters.data_crop_amount[0],
+                                                                 current_array.shape[1] -
+                                                                 parameters.data_crop_amount[1],
+                                                                 current_array.shape[2] -
+                                                                 parameters.data_crop_amount[2]])[0])
+
             current_array, _ = get_data_windows(current_array)
 
             current_gt_train_path = "{0}/{1}.npy.gz".format(gt_train_output_path, str(i))
 
             with gzip.GzipFile(current_gt_train_path, "w") as file:
-                np.save(file, current_array)
+                np.save(file, current_array)  # noqa
 
             gt.append(current_gt_train_path)
 
@@ -207,13 +226,13 @@ def get_train_data():
     else:
         gt = None
 
-    return x, y, example_data, full_current_shape, windowed_full_input_axial_size, current_shape, gt
+    return x, y, example_data, high_resolution_input_shape, full_current_shape, windowed_full_input_axial_size, current_shape, gt
 
 
 def get_preprocessed_train_data():
     print("get_preprocessed_train_data")
 
-    x, y, example_data, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt = \
+    x, y, example_data, high_resolution_input_shape, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt = \
         get_train_data()
 
     x = preprocessing.data_upsample_pad(x, "path")
@@ -222,13 +241,15 @@ def get_preprocessed_train_data():
     if gt is not None:
         gt = preprocessing.data_upsample_pad(gt, "path")
 
-    x, _ = preprocessing.data_preprocessing(x, "path")
-    y, preprocessing_steps = preprocessing.data_preprocessing(y, "path")
+    x, x_preprocessing_steps = preprocessing.data_preprocessing(x, "path")
+    y, y_preprocessing_steps = preprocessing.data_preprocessing(y, "path")
+
+    gt_preprocessing_steps = None
 
     if gt is not None:
-        gt, _ = preprocessing.data_preprocessing(gt, "path")
+        gt, gt_preprocessing_steps = preprocessing.data_preprocessing(gt, "path")
 
-    return x, y, example_data, preprocessing_steps, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt
+    return x, y, example_data, x_preprocessing_steps, y_preprocessing_steps, gt_preprocessing_steps, high_resolution_input_shape, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt
 
 
 def train_step(optimiser, loss, x_train_iteration, y_train_iteration, loss_list):
@@ -271,22 +292,23 @@ def test_step(loss, x_train_iteration, y_train_iteration, evaluation_loss_list):
     return x_train_iteration, evaluation_loss_list, current_accuracy
 
 
-def output_window_predictions(x_prediction, y_train_iteration, gt_prediction, preprocessing_steps, window_input_shape,
-                              current_output_path, j):
+def output_window_predictions(x_prediction, y_train_iteration, gt_prediction, x_preprocessing_steps,
+                              y_preprocessing_steps, gt_preprocessing_steps, window_input_shape, current_output_path,
+                              j):
     print("output_window_predictions")
 
-    x_prediction, _ = preprocessing.data_preprocessing([x_prediction], "numpy", preprocessing_steps)
+    x_prediction = preprocessing.data_preprocessing([x_prediction], "numpy", y_preprocessing_steps)[0][0]
     x_prediction = np.squeeze(preprocessing.data_downsampling_crop([x_prediction], "numpy", window_input_shape)[0])
 
     if gt_prediction is not None:
-        gt_prediction, _ = preprocessing.data_preprocessing([gt_prediction], "numpy", preprocessing_steps)
+        gt_prediction = preprocessing.data_preprocessing([gt_prediction], "numpy", gt_preprocessing_steps)[0][0]
         gt_prediction = np.squeeze(preprocessing.data_downsampling_crop([gt_prediction], "numpy",
                                                                         window_input_shape)[0])
 
         current_output_accuracy = \
             [losses.correlation_coefficient_accuracy(gt_prediction, x_prediction).numpy()]
     else:
-        y_train_iteration, _ = preprocessing.data_preprocessing([y_train_iteration], "numpy", preprocessing_steps)
+        y_train_iteration = preprocessing.data_preprocessing([y_train_iteration], "numpy", y_preprocessing_steps)[0][0]
         y_train_iteration = np.squeeze(preprocessing.data_downsampling_crop([y_train_iteration], "numpy",
                                                                             window_input_shape)[0])
 
@@ -300,11 +322,12 @@ def output_window_predictions(x_prediction, y_train_iteration, gt_prediction, pr
     current_data_path = "{0}/{1}_output.nii.gz".format(current_output_path, str(j))
     nib.save(output_volume, current_data_path)
 
-    return current_data_path
+    return current_data_path, current_output_accuracy[0]
 
 
 def output_patient_time_point_predictions(window_data_paths, example_data, windowed_full_input_axial_size,
-                                          full_input_shape, current_output_path, current_output_prefix, i):
+                                          high_resolution_input_shape, full_input_shape, current_output_path,
+                                          current_output_prefix, i):
     print("output_patient_time_point_predictions")
 
     if len(window_data_paths) > 1:
@@ -349,7 +372,9 @@ def output_patient_time_point_predictions(window_data_paths, example_data, windo
     else:
         output_array = nib.load(window_data_paths[0]).get_fdata()
 
-    output_array = np.squeeze(preprocessing.data_downsampling_crop([output_array], "numpy", full_input_shape)[0])
+    output_array = np.squeeze(preprocessing.data_upsample([output_array], "numpy", full_input_shape)[0])
+    output_array = np.squeeze(preprocessing.data_upsample_pad([output_array], "numpy", high_resolution_input_shape,
+                                                              "constant")[0])
 
     example_data_header = example_data.header
 
@@ -368,12 +393,13 @@ def train_model():
     print("train_model")
 
     # get data and lables
-    x, y, example_data, preprocessing_steps, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt = \
+    x, y, example_data, x_preprocessing_steps, y_preprocessing_steps, gt_preprocessing_steps, high_resolution_input_shape, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt = \
         get_preprocessed_train_data()
 
     optimiser, loss = architecture.get_model_all()
 
     output_paths = []
+    current_output_accuracies = []
 
     for i in range(len(y)):
         print("Patient/Time point:\t{0}".format(str(i)))
@@ -385,7 +411,7 @@ def train_model():
             os.makedirs(patient_output_path, mode=0o770)
 
         with gzip.GzipFile(x[i], "r") as file:
-            number_of_windows = np.load(file).shape[0]
+            number_of_windows = np.load(file).shape[0]  # noqa
 
         current_window_data_paths = []
 
@@ -405,10 +431,10 @@ def train_model():
                 os.makedirs(plot_output_path, mode=0o770)
 
             with gzip.GzipFile(x[i], "r") as file:
-                x_train_iteration = np.asarray([np.load(file)[j]])
+                x_train_iteration = np.asarray([np.load(file)[j]])  # noqa
 
             with gzip.GzipFile(y[i], "r") as file:
-                y_train_iteration = np.asarray([np.load(file)[j]])
+                y_train_iteration = np.asarray([np.load(file)[j]])  # noqa
 
             x_train_iteration = x_train_iteration.astype(np.float32)
             y_train_iteration = y_train_iteration.astype(np.float32)
@@ -418,7 +444,7 @@ def train_model():
 
             if gt is not None:
                 with gzip.GzipFile(gt[i], "r") as file:
-                    gt_prediction = np.asarray([np.load(file)[j]])
+                    gt_prediction = np.asarray([np.load(file)[j]])  # noqa
 
                 gt_prediction = gt_prediction.astype(np.float32)
 
@@ -432,7 +458,7 @@ def train_model():
             evaluation_loss_list = []
 
             total_gt_current_accuracy = None
-            max_accuracy = tf.cast(0.0, dtype=tf.float32)
+            max_accuracy = tf.cast(0.0, dtype=tf.float64)
             max_accuracy_iteration = 0
 
             while True:
@@ -524,19 +550,23 @@ def train_model():
             if gt_prediction is not None:
                 gt_prediction = gt_prediction.numpy()
 
-            current_window_data_path = \
-                output_window_predictions(x_output, y_output, gt_prediction, preprocessing_steps, window_input_shape,
+            current_window_data_path, current_output_accuracy = \
+                output_window_predictions(x_output, y_output, gt_prediction, x_preprocessing_steps,
+                                          y_preprocessing_steps, gt_preprocessing_steps, window_input_shape,
                                           window_output_path, j)
 
             current_window_data_paths.append(current_window_data_path)
+            current_output_accuracies.append(current_output_accuracy)
 
         try:
             output_paths.append(output_patient_time_point_predictions(current_window_data_paths, example_data,
                                                                       windowed_full_input_axial_size,
-                                                                      full_input_shape, patient_output_path, "output",
-                                                                      i))
+                                                                      high_resolution_input_shape, full_input_shape,
+                                                                      patient_output_path, "output", i))
         except:
             print("Error: Input not suitable; continuing")
+
+    print("Output accuracy:\t{0:<20}".format(str(np.mean(current_output_accuracies))))
 
     return output_paths
 

@@ -32,6 +32,9 @@ def get_input(input_shape):
 def get_encoder(x):
     print("get_encoder")
 
+    x = layers.get_gaussian_noise(x, parameters.input_gaussian_sigma)
+    x = tfa.layers.GroupNormalization(groups=1, name="input")(x)  # noqa
+
     layer_layers = parameters.layer_layers[:-1]
     layer_depth = parameters.layer_depth[:-1]
     layer_groups = parameters.layer_groups[:-1]
@@ -47,22 +50,22 @@ def get_encoder(x):
 
     unet_connections = []
 
-    x = layers.get_convolution_layer(x, layer_depth[0], (1, 1, 1), (1, 1, 1), layer_groups[0], True, "input")
-
-    x = layers.get_gaussian_noise(x, parameters.input_gaussian_sigma)
-
     for i in range(len(layer_layers)):
-        x = layers.get_convolution_layer(x, layer_depth[i], (1, 1, 1), (1, 1, 1), layer_groups[i], False)
+        # if x.shape[-1] != layer_depth[i]:
+        #     x = layers.get_depthwise_seperable_convolution_layer(x, layer_depth[i], (1, 1, 1), (1, 1, 1),
+        #                                                          layer_groups[i])
 
-        x_skip = x
+        # x_skip = x
 
         for _ in range(layer_layers[i]):
-            x = layers.get_convolution_layer(x, layer_depth[i], (3, 3, 3), (1, 1, 1), layer_groups[i], False)
+            x = layers.get_depthwise_seperable_convolution_layer(x, layer_depth[i], (3, 3, 3), (1, 1, 1),
+                                                                 layer_groups[i])
 
-        x = tf.keras.layers.Add()([x, x_skip])
+        # x = layers.get_add_layer(x, x_skip)
 
-        unet_connections.append(layers.get_convolution_layer(x, layer_depth[i], (3, 3, 3), (1, 1, 1), layer_groups[i],
-                                                             True, "latent_{0}".format(str(i))))
+        unet_connections.append(x)
+        # unet_connections.append(layers.get_depthwise_seperable_convolution_layer(x, layer_depth[i], (3, 3, 3),
+        #                                                                          (1, 1, 1), layer_groups[i]))
 
         x = layers.get_downsample_layer(x, layer_depth[i], (3, 3, 3), layer_groups[i])
 
@@ -74,25 +77,28 @@ def get_latent(x):
 
     layer_layers = parameters.layer_layers[-1]
     layer_depth = parameters.layer_depth[-1]
+    latent_depth = parameters.latent_depth
     layer_groups = parameters.layer_groups[-1]
 
-    x = layers.get_convolution_layer(x, layer_depth, (1, 1, 1), (1, 1, 1), layer_groups, False)
+    # x = layers.get_depthwise_seperable_convolution_layer(x, layer_depth, (1, 1, 1), (1, 1, 1), layer_groups)
 
-    x_skip = x
-
-    for _ in range(layer_layers):
-        x = layers.get_convolution_layer(x, layer_depth, (3, 3, 3), (1, 1, 1), layer_groups, False)
-
-    x = tf.keras.layers.Add()([x, x_skip])
-
-    latent_x = layers.get_convolution_layer(x, parameters.latent_depth, (3, 3, 3), (1, 1, 1), 1, True, "latent")
-
-    x_skip = x
+    # x_skip = x
 
     for _ in range(layer_layers):
-        x = layers.get_convolution_layer(latent_x, layer_depth, (3, 3, 3), (1, 1, 1), layer_groups, False)
+        x = layers.get_depthwise_seperable_convolution_layer(x, layer_depth, (3, 3, 3), (1, 1, 1), layer_groups)
 
-    x = tf.keras.layers.Add()([x, x_skip])
+    # x = layers.get_add_layer(x, x_skip)
+
+    latent_x = x
+    # latent_x = layers.get_depthwise_seperable_convolution_layer(x, latent_depth, (3, 3, 3), (1, 1, 1), 1)
+    # latent_x = layers.get_orthogonal_convolution_layer(x, latent_depth, (3, 3, 3), "latent")
+
+    # x_skip = x
+
+    for _ in range(layer_layers):
+        x = layers.get_depthwise_seperable_convolution_layer(latent_x, layer_depth, (3, 3, 3), (1, 1, 1), layer_groups)
+
+    # x = layers.get_add_layer(x, x_skip)
 
     return x, latent_x
 
@@ -118,19 +124,29 @@ def get_decoder(x, unet_connections):
     layer_groups.reverse()
 
     for i in range(len(layer_depth)):
-        x = layers.get_upsample_layer(x, layer_depth[i], (3, 3, 3), layer_groups[i])
+        x = layers.get_upsample_layer(x, layer_depth[i], layer_groups[i])
 
         x = layers.get_concatenate_layer(x, unet_connections.pop(), layer_depth[i], (3, 3, 3), (1, 1, 1),
                                          layer_groups[i])
 
-        x_skip = x
+        # x_skip = x
 
         for _ in range(layer_layers[i]):
-            x = layers.get_convolution_layer(x, layer_depth[i], (3, 3, 3), (1, 1, 1), layer_groups[i], False)
+            x = layers.get_depthwise_seperable_convolution_layer(x, layer_depth[i], (3, 3, 3), (1, 1, 1),
+                                                                 layer_groups[i])
 
-        x = tf.keras.layers.Add()([x, x_skip])
+        # x = layers.get_add_layer(x, x_skip)
 
-    x = layers.get_convolution_layer(x, 1, (3, 3, 3), (1, 1, 1), 1, True, "output")
+    x = layers.get_padding(x, (3, 3, 3))
+    x = tf.keras.layers.Conv3D(filters=1,
+                               kernel_size=(3, 3, 3),
+                               strides=(1, 1, 1),
+                               dilation_rate=(1, 1, 1),
+                               groups=1,
+                               padding="valid",
+                               kernel_initializer=tf.keras.initializers.HeNormal(seed=DIP_RDP_iterative.seed_value),
+                               bias_initializer=tf.keras.initializers.Constant(0.0),
+                               name="output")(x)
 
     return x
 
@@ -143,12 +159,9 @@ def get_tensors(input_shape):
     x, unet_connections = get_encoder(x)
     x, latent_x = get_latent(x)
 
-    latent_layers = unet_connections.copy()
-    latent_layers.append(latent_x)
-
     output_x = get_decoder(x, unet_connections)
 
-    return input_x, latent_x, latent_layers, output_x
+    return input_x, latent_x, output_x
 
 
 def get_model_all(input_shape):
@@ -168,12 +181,9 @@ def get_model_all(input_shape):
 def get_model(input_shape):
     print("get_model")
 
-    input_x, latent_x, latent_layers, output_x = get_tensors(input_shape)
+    input_x, latent_x, output_x = get_tensors(input_shape)
 
-    outputs = [output_x]
-    outputs.extend(latent_layers)
-
-    model = k.Model(inputs=input_x, outputs=outputs)
+    model = k.Model(inputs=input_x, outputs=[output_x, latent_x])
 
     gc.collect()
     tf.keras.backend.clear_session()
@@ -184,16 +194,16 @@ def get_model(input_shape):
 def get_optimiser():
     print("get_optimiser")
 
-    if DIP_RDP.bfloat_sixteen_bool:
+    if not DIP_RDP_iterative.float_sixteen_bool or DIP_RDP_iterative.bfloat_sixteen_bool:
         if parameters.weight_decay > 0.0:
-            optimiser = tfa.optimizers.extend_with_decoupled_weight_decay(tf.keras.optimizers.Adam)(weight_decay=parameters.weight_decay, amsgrad=True, clipnorm=1.0)  # noqa
+            optimiser = tfa.optimizers.extend_with_decoupled_weight_decay(tf.keras.optimizers.Adam)(weight_decay=parameters.weight_decay, amsgrad=True)  # noqa
         else:
-            optimiser = tf.keras.optimizers.Adam(amsgrad=True, clipnorm=1.0)
+            optimiser = tf.keras.optimizers.Adam(amsgrad=True)
     else:
         if parameters.weight_decay > 0.0:
-            optimiser = tf.keras.mixed_precision.LossScaleOptimizer(tfa.optimizers.extend_with_decoupled_weight_decay(tf.keras.optimizers.Adam)(weight_decay=parameters.weight_decay, amsgrad=True, clipnorm=1.0))  # noqa
+            optimiser = tf.keras.mixed_precision.LossScaleOptimizer(tfa.optimizers.extend_with_decoupled_weight_decay(tf.keras.optimizers.Adam)(weight_decay=parameters.weight_decay, amsgrad=True))  # noqa
         else:
-            optimiser = tf.keras.mixed_precision.LossScaleOptimizer(tf.keras.optimizers.Adam(amsgrad=True, clipnorm=1.0))
+            optimiser = tf.keras.mixed_precision.LossScaleOptimizer(tf.keras.optimizers.Adam(amsgrad=True))
 
     return optimiser
 

@@ -6,6 +6,7 @@
 import math
 import random
 import numpy as np
+import scipy.stats
 import scipy.ndimage
 from sklearn.preprocessing import StandardScaler
 import tensorflow as tf
@@ -51,7 +52,7 @@ def data_upsample(data, data_type, new_resolution=None):
     for i in range(len(data)):
         if data_type == "path":
             with gzip.GzipFile(data[i], "r") as file:
-                data_copy = np.load(file)
+                data_copy = np.load(file)  # noqa
         else:
             if data_type == "numpy":
                 data_copy = data[i].copy()
@@ -94,7 +95,7 @@ def data_upsample(data, data_type, new_resolution=None):
 
         if data_type == "path":
             with gzip.GzipFile(data[i], "w") as file:
-                np.save(file, data_copy)
+                np.save(file, data_copy)  # noqa
         else:
             if data_type == "numpy":
                 data[i] = data_copy
@@ -102,13 +103,13 @@ def data_upsample(data, data_type, new_resolution=None):
     return data
 
 
-def data_upsample_pad(data, data_type, new_resolution=None):
+def data_upsample_pad(data, data_type, new_resolution=None, pad_mode="edge"):
     print("data_upsample_pad")
 
     for i in range(len(data)):
         if data_type == "path":
             with gzip.GzipFile(data[i], "r") as file:
-                data_copy = np.load(file)
+                data_copy = np.load(file)  # noqa
         else:
             if data_type == "numpy":
                 data_copy = data[i].copy()
@@ -161,8 +162,13 @@ def data_upsample_pad(data, data_type, new_resolution=None):
                 dimension_z_pad_factor = 0
 
         if dimension_x_pad_factor != 0 or dimension_y_pad_factor != 0 or dimension_z_pad_factor != 0:
-            data_copy = np.pad(data_copy, ((0, 0), (dimension_x_pad_factor, 0), (dimension_y_pad_factor, 0),
-                                           (dimension_z_pad_factor, 0)), mode="edge")
+            if pad_mode == "constant":
+                data_copy = np.pad(data_copy, ((0, 0), (dimension_x_pad_factor, 0), (dimension_y_pad_factor, 0),
+                                               (dimension_z_pad_factor, 0)), mode=pad_mode,
+                                   constant_values=scipy.stats.mode(data_copy, axis=None, nan_policy="omit")[0][0])
+            else:
+                data_copy = np.pad(data_copy, ((0, 0), (dimension_x_pad_factor, 0), (dimension_y_pad_factor, 0),
+                                               (dimension_z_pad_factor, 0)), mode=pad_mode)
 
         if new_resolution is None:
             data_copy_shape = list(data_copy.shape)
@@ -180,15 +186,21 @@ def data_upsample_pad(data, data_type, new_resolution=None):
         dimension_z_pad_factor = int(np.abs((new_resolution[2] - data_copy.shape[3]) / 2.0))
 
         if dimension_x_pad_factor != 0 or dimension_y_pad_factor != 0 or dimension_z_pad_factor != 0:
-            data_copy = np.pad(data_copy, ((0, 0), (dimension_x_pad_factor, dimension_x_pad_factor),
-                                           (dimension_y_pad_factor, dimension_y_pad_factor),
-                                           (dimension_z_pad_factor, dimension_z_pad_factor)), mode="edge")
+            if pad_mode == "constant":
+                data_copy = np.pad(data_copy, ((0, 0), (dimension_x_pad_factor, dimension_x_pad_factor),
+                                               (dimension_y_pad_factor, dimension_y_pad_factor),
+                                               (dimension_z_pad_factor, dimension_z_pad_factor)), mode=pad_mode,
+                                   constant_values=scipy.stats.mode(data_copy, axis=None, nan_policy="omit")[0][0])
+            else:
+                data_copy = np.pad(data_copy, ((0, 0), (dimension_x_pad_factor, dimension_x_pad_factor),
+                                               (dimension_y_pad_factor, dimension_y_pad_factor),
+                                               (dimension_z_pad_factor, dimension_z_pad_factor)), mode=pad_mode)
 
         data_copy = np.expand_dims(data_copy, -1)
 
         if data_type == "path":
             with gzip.GzipFile(data[i], "w") as file:
-                np.save(file, data_copy)
+                np.save(file, data_copy)  # noqa
         else:
             if data_type == "numpy":
                 data[i] = data_copy
@@ -202,7 +214,7 @@ def data_downsampling(data, data_type, new_resolution=None):
     for i in range(len(data)):
         if data_type == "path":
             with gzip.GzipFile(data[i], "r") as file:
-                data_copy = np.load(file)
+                data_copy = np.load(file)  # noqa
         else:
             if data_type == "numpy":
                 data_copy = data[i].copy()
@@ -245,7 +257,7 @@ def data_downsampling(data, data_type, new_resolution=None):
 
         if data_type == "path":
             with gzip.GzipFile(data[i], "w") as file:
-                np.save(file, data_copy)
+                np.save(file, data_copy)  # noqa
         else:
             if data_type == "numpy":
                 data[i] = data_copy
@@ -259,7 +271,7 @@ def data_downsampling_crop(data, data_type, new_resolution=None):
     for i in range(len(data)):
         if data_type == "path":
             with gzip.GzipFile(data[i], "r") as file:
-                data_copy = np.load(file)
+                data_copy = np.load(file)  # noqa
         else:
             if data_type == "numpy":
                 data_copy = data[i].copy()
@@ -339,7 +351,7 @@ def data_downsampling_crop(data, data_type, new_resolution=None):
 
         if data_type == "path":
             with gzip.GzipFile(data[i], "w") as file:
-                np.save(file, data_copy)
+                np.save(file, data_copy)  # noqa
         else:
             if data_type == "numpy":
                 data[i] = data_copy
@@ -375,15 +387,29 @@ def mask_fov(array):
     print("mask_fov")
 
     array_shape = np.shape(array)
+    array_shape_len = len(array_shape)
 
-    if len(array_shape) > 3:
-        mask = np.expand_dims(np.expand_dims(create_circular_mask(array_shape[1], array_shape[2]), axis=0), axis=-1)
+    if array_shape_len > 3:
+        if array_shape_len < 5:
+            mask = create_circular_mask(array_shape[1], array_shape[2])
 
-        for i in range(array_shape[3]):
-            masked_img = array[:, :, :, i].copy()
-            masked_img[~ mask] = 0.0
+            for i in range(array_shape[0]):
+                for j in range(array_shape[3]):
+                    masked_img = array[i, :, :, j].copy()
+                    masked_img[~ mask] = 0.0
 
-            array[:, :, :, i] = masked_img
+                    array[i, :, :, j] = masked_img
+        else:
+            mask = np.expand_dims(np.expand_dims(create_circular_mask(array_shape[1], array_shape[2]), axis=0), axis=-1)
+
+            for i in range(array_shape[0]):
+                for j in range(array_shape[3]):
+                    masked_img = array[i, :, :, j].copy()
+                    masked_img = np.expand_dims(masked_img, axis=0)
+
+                    masked_img[~ mask] = 0.0
+
+                    array[i, :, :, j] = masked_img
     else:
         mask = create_circular_mask(array_shape[0], array_shape[1])
 
@@ -396,7 +422,7 @@ def mask_fov(array):
     return array
 
 
-def data_preprocessing(data, data_type, preprocessing_steps=None):
+def data_preprocessing(data, data_type, noise_bool, std_only_bool, preprocessing_steps=None):
     print("data_preprocessing")
 
     if preprocessing_steps is None:
@@ -405,14 +431,14 @@ def data_preprocessing(data, data_type, preprocessing_steps=None):
         for i in range(len(data)):
             if data_type == "path":
                 with gzip.GzipFile(data[i], "r") as file:
-                    data_copy = np.load(file)
+                    data_copy = np.load(file)  # noqa
             else:
                 if data_type == "numpy":
                     data_copy = data[i].copy()
                 else:
                     data_copy = None
 
-            data_copy = mask_fov(data_copy)
+            # data_copy = mask_fov(data_copy)
 
             data_copy = data_copy.reshape(-1, 1)
 
@@ -421,14 +447,14 @@ def data_preprocessing(data, data_type, preprocessing_steps=None):
         for i in range(len(data)):
             if data_type == "path":
                 with gzip.GzipFile(data[i], "r") as file:
-                    data_copy = np.load(file)
+                    data_copy = np.load(file)  # noqa
             else:
                 if data_type == "numpy":
                     data_copy = data[i].copy()
                 else:
                     data_copy = None
 
-            data_copy = mask_fov(data_copy)
+            # data_copy = mask_fov(data_copy)
 
             data_copy_shape = data_copy.shape
             data_copy = data_copy.reshape(-1, 1)
@@ -437,9 +463,13 @@ def data_preprocessing(data, data_type, preprocessing_steps=None):
 
             data_copy = data_copy.reshape(data_copy_shape)
 
+            if noise_bool:
+                data_copy = data_copy + np.random.normal(loc=0.0, scale=parameters.input_gaussian_weight,
+                                                         size=data_copy.shape)
+
             if data_type == "path":
                 with gzip.GzipFile(data[i], "w") as file:
-                    np.save(file, data_copy)
+                    np.save(file, data_copy)  # noqa
             else:
                 if data_type == "numpy":
                     data[i] = data_copy
@@ -447,7 +477,7 @@ def data_preprocessing(data, data_type, preprocessing_steps=None):
         for i in range(len(data)):
             if data_type == "path":
                 with gzip.GzipFile(data[i], "r") as file:
-                    data_copy = np.load(file)
+                    data_copy = np.load(file)  # noqa
             else:
                 if data_type == "numpy":
                     data_copy = data[i].copy()
@@ -457,13 +487,16 @@ def data_preprocessing(data, data_type, preprocessing_steps=None):
             data_copy_shape = data_copy.shape
             data_copy = data_copy.reshape(-1, 1)
 
-            data_copy = preprocessing_steps.inverse_transform(data_copy)
+            if std_only_bool:
+                data_copy = data_copy * preprocessing_steps.scale_[0]
+            else:
+                data_copy = preprocessing_steps.inverse_transform(data_copy)
 
             data_copy = data_copy.reshape(data_copy_shape)
 
             if data_type == "path":
                 with gzip.GzipFile(data[i], "w") as file:
-                    np.save(file, data_copy)
+                    np.save(file, data_copy)  # noqa
             else:
                 if data_type == "numpy":
                     data[i] = data_copy

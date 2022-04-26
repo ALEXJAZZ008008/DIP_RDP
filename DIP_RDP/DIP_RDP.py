@@ -7,6 +7,7 @@ import gc
 import os
 import re
 import shutil
+import math
 import random
 import numpy as np
 import scipy.constants
@@ -48,14 +49,6 @@ else:
 
 # device = cuda.get_current_device()
 
-# physical_devices = tf.config.list_physical_devices("GPU")
-
-# try:
-#     tf.config.experimental.set_memory_growth(physical_devices[0], True)
-# except:
-    # Invalid device or cannot modify virtual devices once initialized.
-#     pass
-
 float_sixteen_bool = True  # set the network to use float16 data
 bfloat_sixteen_bool = False
 cpu_bool = False  # if using CPU, set to true: disables mixed precision computation
@@ -76,11 +69,16 @@ else:
 tf.keras.mixed_precision.set_global_policy(policy)
 
 
-gpus = tf.config.list_physical_devices("GPU")
+# gpus = tf.config.list_physical_devices("GPU")
 
-if gpus:
-    for gpu in gpus:
-        tf.config.experimental.set_memory_growth(gpu, True)
+# if gpus:
+#     for gpu in gpus:
+#         tf.config.experimental.set_memory_growth(gpu, True)
+
+#     os.environ["TF_FORCE_GPU_ALLOW_GROWTH"] = "true"
+
+
+# os.environ["TF_GPU_ALLOCATOR"] = "cuda_malloc_async"
 
 
 import parameters
@@ -187,37 +185,112 @@ def get_train_data():
     y_files = ["{0}{1}".format(y_path, s) for s in y_files]
 
     example_data = nib.load(y_files[0])
-    voxel_sizes = example_data.header.get_zooms()
+    # voxel_sizes = example_data.header.get_zooms()
+
+    y = []
+
+    y_train_output_path = "{0}/y_train".format(output_path)
+
+    if not os.path.exists(y_train_output_path):
+        os.makedirs(y_train_output_path, mode=0o770)
+
+    high_resolution_input_shape = None
+    full_current_shape = None
+    windowed_full_input_axial_size = None
+    current_shape = None
+    input_noise = None
+
+    for i in range(len(y_files)):
+        current_volume = nib.load(y_files[i])
+        current_array = current_volume.get_fdata()
+
+        if high_resolution_input_shape is None:
+            high_resolution_input_shape = current_array.shape
+
+        if parameters.data_crop_bool:
+            current_array = \
+                np.squeeze(preprocessing.data_downsampling_crop([current_array], "numpy",
+                                                                [current_array.shape[0] -
+                                                                 parameters.data_crop_amount[0],
+                                                                 current_array.shape[1] -
+                                                                 parameters.data_crop_amount[1],
+                                                                 current_array.shape[2] -
+                                                                 parameters.data_crop_amount[2]])[0])
+
+        if full_current_shape is None:
+            full_current_shape = current_array.shape
+
+        # current_array = normalise_voxel_sizes(current_array, voxel_sizes)
+        current_array, windowed_full_input_axial_size = get_data_windows(current_array)
+
+        if current_shape is None:
+            current_shape = current_array[0].shape
+
+        current_y_train_path = "{0}/{1}.npy.gz".format(y_train_output_path, str(i))
+
+        with gzip.GzipFile(current_y_train_path, "w") as file:
+            np.save(file, current_array)  # noqa
+
+        y.append(current_y_train_path)
 
     data_mask_path = "{0}/data_mask/".format(data_path)
 
+    data_mask_train_output_path = "{0}/data_mask_train".format(output_path)
+
+    if not os.path.exists(data_mask_train_output_path):
+        os.makedirs(data_mask_train_output_path, mode=0o770)
+
     if os.path.exists(data_mask_path):
+        data_mask = []
+
         data_mask_files = os.listdir(data_mask_path)
         data_mask_files.sort(key=human_sorting)
         data_mask_files = ["{0}{1}".format(data_mask_path, s) for s in data_mask_files]
 
-        data_mask = []
-
-        data_mask_train_output_path = "{0}/data_mask_train".format(output_path)
-
-        if not os.path.exists(data_mask_train_output_path):
-            os.makedirs(data_mask_train_output_path, mode=0o770)
-
         for i in range(len(data_mask_files)):
-            current_array = nib.load(data_mask_files[i]).get_fdata()
+            current_volume = nib.load(data_mask_files[i])
+            current_array = current_volume.get_fdata()
 
-            current_array = normalise_voxel_sizes(current_array, voxel_sizes)
+            if parameters.data_crop_bool:
+                current_array = \
+                    np.squeeze(preprocessing.data_downsampling_crop([current_array], "numpy",
+                                                                    [current_array.shape[0] -
+                                                                     parameters.data_crop_amount[0],
+                                                                     current_array.shape[1] -
+                                                                     parameters.data_crop_amount[1],
+                                                                     current_array.shape[2] -
+                                                                     parameters.data_crop_amount[2]])[0])
+
+            # current_array = normalise_voxel_sizes(current_array, voxel_sizes)
             current_array, _ = get_data_windows(current_array)
 
             current_data_mask_train_path = "{0}/{1}.npy.gz".format(data_mask_train_output_path, str(i))
 
             with gzip.GzipFile(current_data_mask_train_path, "w") as file:
-                np.save(file, current_array)
+                np.save(file, current_array)  # noqa
 
             data_mask.append(current_data_mask_train_path)
 
         data_mask = np.asarray(data_mask)
     else:
+        # data_mask = []
+
+        # for i in range(len(y)):
+        #     with gzip.GzipFile(y[i], "r") as file:
+        #         current_array = np.load(file)  # noqa
+
+        #     current_array = np.ones(current_array.shape)
+        #     current_array = preprocessing.mask_fov(current_array)
+
+        #     current_data_mask_train_path = "{0}/{1}.npy.gz".format(data_mask_train_output_path, str(i))
+
+        #     with gzip.GzipFile(current_data_mask_train_path, "w") as file:
+        #         np.save(file, current_array)  # noqa
+
+        #     data_mask.append(current_data_mask_train_path)
+
+        # data_mask = np.asarray(data_mask)
+
         data_mask = None
 
     loss_mask_path = "{0}/loss_mask/".format(data_path)
@@ -235,68 +308,61 @@ def get_train_data():
         loss_mask_files = ["{0}{1}".format(loss_mask_path, s) for s in loss_mask_files]
 
         for i in range(len(loss_mask_files)):
-            current_array = nib.load(loss_mask_files[i]).get_fdata()
+            current_volume = nib.load(loss_mask_files[i])
+            current_array = current_volume.get_fdata()
 
-            current_array = normalise_voxel_sizes(current_array, voxel_sizes)
+            if parameters.data_crop_bool:
+                current_array = \
+                    np.squeeze(preprocessing.data_downsampling_crop([current_array], "numpy",
+                                                                    [current_array.shape[0] -
+                                                                     parameters.data_crop_amount[0],
+                                                                     current_array.shape[1] -
+                                                                     parameters.data_crop_amount[1],
+                                                                     current_array.shape[2] -
+                                                                     parameters.data_crop_amount[2]])[0])
+
+            # current_array = normalise_voxel_sizes(current_array, voxel_sizes)
             current_array, _ = get_data_windows(current_array)
 
             current_loss_mask_train_path = "{0}/{1}.npy.gz".format(loss_mask_train_output_path, str(i))
 
             with gzip.GzipFile(current_loss_mask_train_path, "w") as file:
-                np.save(file, current_array)
+                np.save(file, current_array)  # noqa
 
             loss_mask.append(current_loss_mask_train_path)
     else:
-        loss_mask = None
+        loss_mask = []
+
+        for i in range(len(y)):
+            with gzip.GzipFile(y[i], "r") as file:
+                current_array = np.load(file)  # noqa
+
+            current_array = np.ones(current_array.shape)
+            # current_array = preprocessing.mask_fov(current_array)
+
+            current_loss_mask_train_path = "{0}/{1}.npy.gz".format(loss_mask_train_output_path, str(i))
+
+            with gzip.GzipFile(current_loss_mask_train_path, "w") as file:
+                np.save(file, current_array)  # noqa
+
+            loss_mask.append(current_loss_mask_train_path)
 
     x = []
-    y = []
 
     x_train_output_path = "{0}/x_train".format(output_path)
 
     if not os.path.exists(x_train_output_path):
         os.makedirs(x_train_output_path, mode=0o770)
 
-    y_train_output_path = "{0}/y_train".format(output_path)
-
-    if not os.path.exists(y_train_output_path):
-        os.makedirs(y_train_output_path, mode=0o770)
-
-    full_current_shape = None
-    windowed_full_input_axial_size = None
-    current_shape = None
-    input_noise = None
-
-    for i in range(len(y_files)):
-        current_volume = nib.load(y_files[i])
-        current_array = current_volume.get_fdata()
-
-        current_array = normalise_voxel_sizes(current_array, voxel_sizes)
-
-        if parameters.data_window_bool:
-            if full_current_shape is None:
-                full_current_shape = current_array.shape
-
-        current_array, windowed_full_input_axial_size = get_data_windows(current_array)
-
-        if full_current_shape is None:
-            full_current_shape = current_array.shape[1:]
-
-        if current_shape is None:
-            current_shape = current_array[0].shape
-
-        current_y_train_path = "{0}/{1}.npy.gz".format(y_train_output_path, str(i))
-
-        with gzip.GzipFile(current_y_train_path, "w") as file:
-            np.save(file, current_array)
-
-        y.append(current_y_train_path)
+    for i in range(len(y)):
+        with gzip.GzipFile(y[i], "r") as file:
+            current_array = np.load(file)  # noqa
 
         if parameters.data_input_bool:
             if parameters.data_gaussian_smooth_sigma_xy > 0.0 or parameters.data_gaussian_smooth_sigma_z > 0.0:
                 if loss_mask is not None:
                     with gzip.GzipFile(loss_mask[i], "r") as file:
-                        current_loss_mask = np.load(file)
+                        current_loss_mask = np.load(file)  # noqa
 
                     current_array = current_array * current_loss_mask
 
@@ -306,75 +372,81 @@ def get_train_data():
                                                                      parameters.data_gaussian_smooth_sigma_xy,
                                                                      parameters.data_gaussian_smooth_sigma_z),
                                                               mode="edge")
-
-                current_array, _ = preprocessing.data_preprocessing(current_array, "numpy")
         else:
             current_array = np.zeros(current_array.shape)
 
-        if parameters.input_gaussian_weight > 0.0 or parameters.input_poisson_weight > 0.0:
-            if parameters.data_input_bool:
-                current_array, _ = preprocessing.data_preprocessing(current_array, "numpy")
+        # if parameters.input_gaussian_weight > 0.0 or parameters.input_poisson_weight > 0.0:
+        #     if input_noise is None:
+        #         if parameters.noise_path is not None:
+        #             input_noise_path = "{0}/noise.npy.gk".format(parameters.noise_path)
+        #         else:
+        #             input_noise_path = None
 
-            if input_noise is None:
-                if parameters.noise_path is not None:
-                    input_noise_path = "{0}/noise.npy.gk".format(parameters.noise_path)
-                else:
-                    input_noise_path = None
+        #         if input_noise_path is not None and os.path.exists(input_noise_path):
+        #             print("Previous input noise found!")
 
-                if input_noise_path is not None and os.path.exists(input_noise_path):
-                    print("Previous input noise found!")
+        #             with gzip.GzipFile(input_noise_path, "r") as file:
+        #                 input_noise = np.load(file)  # noqa
+        #         else:
+        #             if parameters.input_gaussian_weight > 0.0:
+        #                 input_noise = np.random.normal(loc=np.mean(current_array), scale=np.std(current_array),
+        #                                                size=current_array.shape)
+        #             else:
+        #                 if parameters.input_poisson_weight > 0.0:
+        #                     input_noise = np.ones(current_array.shape)
+        #                     input_noise = (input_noise / np.sum(input_noise)) * np.sum(current_array)
 
-                    with gzip.GzipFile(input_noise_path, "r") as file:
-                        input_noise = np.load(file)
-                else:
-                    if parameters.input_gaussian_weight > 0.0:
-                        input_noise = np.random.normal(loc=0.0, scale=1.0, size=current_array.shape)
-                    else:
-                        if parameters.input_poisson_weight > 0.0:
-                            input_noise = np.ones(current_array.shape)
-                            input_noise = (input_noise / np.sum(input_noise)) * np.sum(current_array)
+        #                     input_noise = np.random.poisson(lam=input_noise, size=current_array.shape)
 
-                            input_noise = np.random.poisson(lam=input_noise, size=current_array.shape)
+        #             if data_mask is not None:
+        #                 with gzip.GzipFile(data_mask[i], "r") as file:
+        #                     current_data_mask = np.load(file)  # noqa
 
-                    if data_mask is not None:
-                        with gzip.GzipFile(data_mask[i], "r") as file:
-                            current_data_mask = np.load(file)
+        #                 input_noise_mean = np.mean(input_noise)
+        #                 input_noise_std = np.std(input_noise)
 
-                        data_mask_noise = input_noise * current_data_mask
-                    else:
-                        data_mask_noise = input_noise
+        #                 data_mask_noise = input_noise * current_data_mask
 
-                    if loss_mask is not None:
-                        with gzip.GzipFile(loss_mask[i], "r") as file:
-                            current_loss_mask = np.load(file)
+        #                 data_mask_noise = (data_mask_noise - np.mean(data_mask_noise)) / np.std(data_mask_noise)
+        #                 data_mask_noise = (data_mask_noise * input_noise_std) + input_noise_mean
+        #             else:
+        #                 data_mask_noise = input_noise
 
-                        loss_mask_current_array = input_noise * ((current_loss_mask * -1.0) + 1.0)
-                    else:
-                        loss_mask_current_array = 0.0
+                    # if loss_mask is not None:
+                    #     with gzip.GzipFile(loss_mask[i], "r") as file:
+                    #         current_loss_mask = np.load(file)  # noqa
 
-                    input_noise = data_mask_noise + loss_mask_current_array
+                    #     loss_mask_current_array = input_noise * ((current_loss_mask * -1.0) + 1.0)
+                    # else:
+                    #     loss_mask_current_array = 0.0
 
-                    if parameters.noise_path is not None:
-                        input_noise_path = "{0}/noise.npy.gk".format(output_path)
+                    # input_noise = data_mask_noise + loss_mask_current_array
 
-                        with gzip.GzipFile(input_noise_path, "w") as file:
-                            np.save(file, input_noise)
+        #             input_noise = data_mask_noise
 
-            if parameters.input_gaussian_weight > 0.0:
-                current_array = ((current_array + (parameters.input_gaussian_weight * input_noise)) /
-                                 (1.0 + parameters.input_gaussian_weight))
-            else:
-                if parameters.input_poisson_weight > 0.0:
-                    current_array = ((current_array + (parameters.input_poisson_weight * input_noise)) /
-                                     (1.0 + parameters.input_poisson_weight))
+        #             if parameters.noise_path is not None:
+        #                 input_noise_path = "{0}/noise.npy.gk".format(output_path)
 
-            if parameters.noise_path is not None:
-                input_noise = None
+        #                 with gzip.GzipFile(input_noise_path, "w") as file:
+        #                     np.save(file, input_noise)  # noqa
+
+        #     if parameters.input_gaussian_weight > 0.0:
+                # current_array = ((current_array + (parameters.input_gaussian_weight * input_noise)) /
+                #                  (1.0 + parameters.input_gaussian_weight))
+
+        #         pass
+        #     else:
+        #         if parameters.input_poisson_weight > 0.0:
+        #             current_array = ((current_array + (parameters.input_poisson_weight * input_noise)) /
+        #                              (1.0 + parameters.input_poisson_weight))
+
+        #     if parameters.noise_path is not None:
+        #         input_noise = None
 
         current_x_train_path = "{0}/{1}.npy.gz".format(x_train_output_path, str(i))
 
         with gzip.GzipFile(current_x_train_path, "w") as file:
-            np.save(file, current_array)
+            np.save(file, current_array)  # noqa
 
         x.append(current_x_train_path)
 
@@ -395,19 +467,29 @@ def get_train_data():
         for i in range(len(gt_files)):
             current_array = nib.load(gt_files[i]).get_fdata()
 
-            current_array = normalise_voxel_sizes(current_array, voxel_sizes)
+            if parameters.data_crop_bool:
+                current_array = \
+                    np.squeeze(preprocessing.data_downsampling_crop([current_array], "numpy",
+                                                                    [current_array.shape[0] -
+                                                                     parameters.data_crop_amount[0],
+                                                                     current_array.shape[1] -
+                                                                     parameters.data_crop_amount[1],
+                                                                     current_array.shape[2] -
+                                                                     parameters.data_crop_amount[2]])[0])
+
+            # current_array = normalise_voxel_sizes(current_array, voxel_sizes)
             current_array, _ = get_data_windows(current_array)
 
             if data_mask is not None:
                 with gzip.GzipFile(data_mask[i], "r") as file:
-                    current_data_mask = np.load(file)
+                    current_data_mask = np.load(file)  # noqa
 
                 current_array = current_array * current_data_mask
 
             current_gt_train_path = "{0}/{1}.npy.gz".format(gt_train_output_path, str(i))
 
             with gzip.GzipFile(current_gt_train_path, "w") as file:
-                np.save(file, current_array)
+                np.save(file, current_array)  # noqa
 
             gt.append(current_gt_train_path)
 
@@ -415,27 +497,13 @@ def get_train_data():
     else:
         gt = None
 
-    if loss_mask is None:
-        loss_mask = []
-
-        for i in range(len(y_files)):
-            with gzip.GzipFile(y[i], "r") as file:
-                current_array = np.ones(np.load(file).shape)
-
-            current_loss_mask_train_path = "{0}/{1}.npy.gz".format(loss_mask_train_output_path, str(i))
-
-            with gzip.GzipFile(current_loss_mask_train_path, "w") as file:
-                np.save(file, current_array)
-
-            loss_mask.append(current_loss_mask_train_path)
-
-    return x, y, example_data, full_current_shape, windowed_full_input_axial_size, current_shape, gt, data_mask, loss_mask
+    return x, y, example_data, high_resolution_input_shape, full_current_shape, windowed_full_input_axial_size, current_shape, gt, data_mask, loss_mask
 
 
 def get_preprocessed_train_data():
     print("get_preprocessed_train_data")
 
-    x, y, example_data, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt, data_mask, loss_mask = \
+    x, y, example_data, high_resolution_input_shape, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt, data_mask, loss_mask = \
         get_train_data()
 
     x = preprocessing.data_upsample_pad(x, "path")
@@ -450,13 +518,15 @@ def get_preprocessed_train_data():
     if loss_mask is not None:
         loss_mask = preprocessing.data_upsample_pad(loss_mask, "path")
 
-    x, preprocessing_steps = preprocessing.data_preprocessing(x, "path")
-    # y, preprocessing_steps = preprocessing.data_preprocessing(y, "path")
+    x, x_preprocessing_steps = preprocessing.data_preprocessing(x, "path", True, False)
+    y, y_preprocessing_steps = preprocessing.data_preprocessing(y, "path", False, False)
 
-    # if gt is not None:
-    #     gt, _ = preprocessing.data_preprocessing(gt, "path")
+    gt_preprocessing_steps = None
 
-    return x, y, example_data, preprocessing_steps, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt, data_mask, loss_mask
+    if gt is not None:
+        gt, gt_preprocessing_steps = preprocessing.data_preprocessing(gt, "path", False, False)
+
+    return x, y, example_data, x_preprocessing_steps, y_preprocessing_steps, gt_preprocessing_steps, high_resolution_input_shape, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt, data_mask, loss_mask
 
 
 # https://stackoverflow.com/questions/43137288/how-to-determine-needed-memory-of-keras-model
@@ -510,33 +580,12 @@ def get_bayesian_train_prediction(model, x_train_iteration):
     tf.keras.backend.clear_session()
 
     x_prediction = tf.math.reduce_mean([x_prediction_1[0]], axis=0)
-    # x_latent = tf.math.reduce_mean([x_prediction_1[8]], axis=0)
+    x_latent = tf.math.reduce_mean([x_prediction_1[1]], axis=0)
 
-    # x_latent_0 = tf.math.reduce_mean([x_prediction_1[1]], axis=0)
-    # x_latent_1 = tf.math.reduce_mean([x_prediction_1[2]], axis=0)
-    # x_latent_2 = tf.math.reduce_mean([x_prediction_1[3]], axis=0)
-    # x_latent_3 = tf.math.reduce_mean([x_prediction_1[4]], axis=0)
-    # x_latent_4 = tf.math.reduce_mean([x_prediction_1[5]], axis=0)
-    # x_latent_5 = tf.math.reduce_mean([x_prediction_1[6]], axis=0)
-    # x_latent_6 = tf.math.reduce_mean([x_prediction_1[7]], axis=0)
+    x_prediction_uncertainty = tf.math.reduce_mean(tf.math.reduce_std([x_prediction_1[0]], axis=0))
+    x_latent_uncertainty = tf.math.reduce_mean(tf.math.reduce_std([x_prediction_1[1]], axis=0))
 
-    # x_prediction_uncertainty = tf.math.reduce_mean(tf.math.reduce_std([x_prediction_1[0]], axis=0))
-    # x_latent_uncertainty = tf.math.reduce_mean(tf.math.reduce_std([x_prediction_1[8]], axis=0))
-
-    x_latent = None
-
-    x_latent_0 = None
-    x_latent_1 = None
-    x_latent_2 = None
-    x_latent_3 = None
-    x_latent_4 = None
-    x_latent_5 = None
-    x_latent_6 = None
-
-    x_prediction_uncertainty = None
-    x_latent_uncertainty = None
-
-    return x_prediction, x_prediction_uncertainty, x_latent, x_latent_uncertainty, x_latent_0, x_latent_1, x_latent_2, x_latent_3, x_latent_4, x_latent_5, x_latent_6
+    return x_prediction, x_prediction_uncertainty, x_latent, x_latent_uncertainty
 
 
 def train_backup(model, optimiser, loss_list, previous_model_weight_list, previous_optimiser_weight_list,
@@ -578,20 +627,24 @@ def train_backup(model, optimiser, loss_list, previous_model_weight_list, previo
 
 
 def train_step(model, optimiser, loss, x_train_iteration, y_train_iteration, loss_mask_train_iteration, loss_list,
-               previous_model_weight_list, previous_optimiser_weight_list, model_output_path):
+               previous_model_weight_list, average_model_list, previous_optimiser_weight_list, average_optimiser_list,
+               model_output_path):
     current_loss_increase_patience = 0
 
     while True:
+        previous_model_weights = model.get_weights()
+        previous_optimiser_weights = optimiser.get_weights()
+
         if parameters.backtracking_weight_percentage is not None:
             previous_model_weight_list.append("{0}/model_{1}.pkl".format(model_output_path, str(len(previous_model_weight_list))))
 
             with open(previous_model_weight_list[-1], "wb") as file:
-                pickle.dump(model.get_weights(), file)
+                pickle.dump(previous_model_weights, file)
 
             previous_optimiser_weight_list.append("{0}/optimiser_{1}.pkl".format(model_output_path, str(len(previous_optimiser_weight_list))))
 
             with open(previous_optimiser_weight_list[-1], "wb") as file:
-                pickle.dump(optimiser.get_weights(), file)
+                pickle.dump(previous_optimiser_weights, file)
 
         x_train_iteration_jitter, y_train_iteration_jitter, loss_mask_train_iteration = \
             preprocessing.introduce_jitter(x_train_iteration, y_train_iteration, loss_mask_train_iteration)
@@ -606,7 +659,7 @@ def train_step(model, optimiser, loss, x_train_iteration, y_train_iteration, los
                 # The operations that the layer applies
                 # to its inputs are going to be recorded
                 # on the GradientTape.
-                x_prediction, x_prediction_uncertainty, x_latent, x_latent_uncertainty, x_latent_0, x_latent_1, x_latent_2, x_latent_3, x_latent_4, x_latent_5, x_latent_6 = get_bayesian_train_prediction(model, x_train_iteration_jitter)  # Logits for this minibatch
+                x_prediction, x_prediction_uncertainty, x_latent, x_latent_uncertainty = get_bayesian_train_prediction(model, x_train_iteration_jitter)  # Logits for this minibatch
 
                 # current_y_train_iteration = y_train_iteration * loss_mask_train_iteration
                 # x_prediction = x_prediction * loss_mask_train_iteration
@@ -616,20 +669,20 @@ def train_step(model, optimiser, loss, x_train_iteration, y_train_iteration, los
                 #                                    parameters.uncertainty_weight *
                 #                                    tf.cast(x_prediction_uncertainty, dtype=tf.float32),
                 #                                    losses.scale_regulariser(y_train_iteration_jitter, x_prediction),
-                #                                    tf.math.reduce_mean([losses.covariance_regulariser(x_latent),
-                #                                                         losses.covariance_regulariser(x_latent_0),
-                #                                                         losses.covariance_regulariser(x_latent_1),
-                #                                                         losses.covariance_regulariser(x_latent_2),
-                #                                                         losses.covariance_regulariser(x_latent_3),
-                #                                                         losses.covariance_regulariser(x_latent_4),
-                #                                                         losses.covariance_regulariser(x_latent_5),
-                #                                                         losses.covariance_regulariser(x_latent_6)]),
+                #                                    losses.covariance_regulariser(x_latent),
                 #                                    parameters.kernel_regulariser_weight *
                 #                                    tf.math.reduce_mean(model.losses[::2]),
                 #                                    parameters.activity_regulariser_weight *
                 #                                    tf.math.reduce_mean(model.losses[1::2])])
 
-                current_loss = loss(y_train_iteration, x_prediction)
+                # current_loss = loss(y_train_iteration, x_prediction)
+
+                current_loss = tf.math.reduce_sum([loss(y_train_iteration, x_prediction),
+                                                   tf.math.reduce_sum(model.losses)])
+
+                # current_loss = tf.math.reduce_sum([loss(current_y_train_iteration, x_prediction),
+                #                                    losses.covariance_regulariser(x_latent),
+                #                                    tf.math.reduce_sum(model.losses)])
         else:
             # Open a GradientTape to record the operations run
             # during the forward pass, which enables auto-differentiation.
@@ -640,7 +693,7 @@ def train_step(model, optimiser, loss, x_train_iteration, y_train_iteration, los
                 # The operations that the layer applies
                 # to its inputs are going to be recorded
                 # on the GradientTape.
-                x_prediction, x_prediction_uncertainty, x_latent, x_latent_uncertainty, x_latent_0, x_latent_1, x_latent_2, x_latent_3, x_latent_4, x_latent_5, x_latent_6 = get_bayesian_train_prediction(model, x_train_iteration_jitter)  # Logits for this minibatch
+                x_prediction, x_prediction_uncertainty, x_latent, x_latent_uncertainty = get_bayesian_train_prediction(model, x_train_iteration_jitter)  # Logits for this minibatch
 
                 # current_y_train_iteration = y_train_iteration * loss_mask_train_iteration
                 # x_prediction = x_prediction * loss_mask_train_iteration
@@ -650,20 +703,20 @@ def train_step(model, optimiser, loss, x_train_iteration, y_train_iteration, los
                 #                                    parameters.uncertainty_weight *
                 #                                    tf.cast(x_prediction_uncertainty, dtype=tf.float32),
                 #                                    losses.scale_regulariser(y_train_iteration_jitter, x_prediction),
-                #                                    tf.math.reduce_mean([losses.covariance_regulariser(x_latent),
-                #                                                         losses.covariance_regulariser(x_latent_0),
-                #                                                         losses.covariance_regulariser(x_latent_1),
-                #                                                         losses.covariance_regulariser(x_latent_2),
-                #                                                         losses.covariance_regulariser(x_latent_3),
-                #                                                         losses.covariance_regulariser(x_latent_4),
-                #                                                         losses.covariance_regulariser(x_latent_5),
-                #                                                         losses.covariance_regulariser(x_latent_6)]),
+                #                                    losses.covariance_regulariser(x_latent),
                 #                                    parameters.kernel_regulariser_weight *
                 #                                    tf.math.reduce_mean(model.losses[::2]),
                 #                                    parameters.activity_regulariser_weight *
                 #                                    tf.math.reduce_mean(model.losses[1::2])])
 
-                current_loss = loss(y_train_iteration, x_prediction)
+                # current_loss = loss(y_train_iteration, x_prediction)
+
+                current_loss = tf.math.reduce_sum([loss(y_train_iteration, x_prediction),
+                                                   tf.math.reduce_sum(model.losses)])
+
+                # current_loss = tf.math.reduce_sum([loss(y_train_iteration, x_prediction),
+                #                                    losses.covariance_regulariser(x_latent),
+                #                                    tf.math.reduce_sum(model.losses)])
 
                 current_loss = optimiser.get_scaled_loss(current_loss)
 
@@ -713,7 +766,12 @@ def train_step(model, optimiser, loss, x_train_iteration, y_train_iteration, los
 
     del tape
 
+    gc.collect()
+    tf.keras.backend.clear_session()
+
     grads = optimiser.get_unscaled_gradients(grads)
+
+    grads, _ = tf.clip_by_global_norm(grads, 1.0)
 
     # Run one step of gradient descent by updating
     # the value of the variables to minimize the loss.
@@ -722,8 +780,89 @@ def train_step(model, optimiser, loss, x_train_iteration, y_train_iteration, los
     gc.collect()
     tf.keras.backend.clear_session()
 
+    if parameters.model_average_bool:
+        average_model_list.append(model.get_weights())
+        average_optimiser_list.append(optimiser.get_weights())
+
+        average_optimiser_list_length = len(average_optimiser_list)
+
+        if average_optimiser_list_length > 1:
+            for i in range(average_optimiser_list_length):
+                for j in range(i, average_optimiser_list_length):
+                    if (np.array(average_optimiser_list[i], dtype=object).shape !=
+                            np.array(average_optimiser_list[j], dtype=object).shape):
+                        average_optimiser_list[i] = average_optimiser_list[j]
+
+            if all([np.allclose(x, y) for x, y in zip(average_model_list[-1], average_model_list[-2])]):
+                average_model_list.pop()
+                average_optimiser_list.pop()
+            else:
+                if parameters.model_average_gaussian_sigma > 0.0:
+                    truncated_half_normal_kernel = \
+                        [1.0 / (parameters.model_average_gaussian_sigma * math.sqrt(2.0 * math.pi)) *
+                         math.exp(
+                             -math.pow(float(x), 2.0) / (2.0 * math.pow(parameters.model_average_gaussian_sigma, 2.0)))
+                         for x in range(len(average_model_list))]
+
+                    truncated_half_normal_kernel.reverse()
+
+                    truncated_half_normal_kernel = np.array(truncated_half_normal_kernel)
+                    truncated_half_normal_kernel = truncated_half_normal_kernel / np.sum(truncated_half_normal_kernel)
+
+                    if parameters.model_average_window_bool:
+                        if len(average_model_list) >= parameters.model_average_window_length:
+                            model.set_weights(np.sum(np.array(average_model_list, dtype=object) *
+                                                     np.expand_dims(truncated_half_normal_kernel, axis=-1), axis=0))
+                            optimiser.set_weights(np.sum(np.array(average_optimiser_list, dtype=object) *
+                                                         np.expand_dims(truncated_half_normal_kernel, axis=-1), axis=0))
+
+                            average_model_list = []
+                            average_optimiser_list = []
+                        else:
+                            model.set_weights(previous_model_weights)
+
+                            if (np.array(previous_optimiser_weights, dtype=object).shape ==
+                                    np.array(optimiser.get_weights(), dtype=object).shape):
+                                optimiser.set_weights(previous_optimiser_weights)
+                    else:
+                        model.set_weights(np.sum(np.array(average_model_list, dtype=object) *
+                                                 np.expand_dims(truncated_half_normal_kernel, axis=-1), axis=0))
+                        optimiser.set_weights(np.sum(np.array(average_optimiser_list, dtype=object) *
+                                                     np.expand_dims(truncated_half_normal_kernel, axis=-1), axis=0))
+                else:
+                    if parameters.model_average_window_bool:
+                        if len(average_model_list) >= parameters.model_average_window_length:
+                            model.set_weights(np.mean(np.array(average_model_list, dtype=object), axis=0))
+                            optimiser.set_weights(np.mean(np.array(average_optimiser_list, dtype=object), axis=0))
+
+                            average_model_list = []
+                            average_optimiser_list = []
+                        else:
+                            model.set_weights(previous_model_weights)
+
+                            if (np.array(previous_optimiser_weights, dtype=object).shape ==
+                                    np.array(optimiser.get_weights(), dtype=object).shape):
+                                optimiser.set_weights(previous_optimiser_weights)
+                    else:
+                        model.set_weights(np.mean(np.array(average_model_list, dtype=object), axis=0))
+                        optimiser.set_weights(np.mean(np.array(average_optimiser_list, dtype=object), axis=0))
+
+                if parameters.model_average_accumulate_bool:
+                    average_model_list.pop()
+                    average_model_list.append(model.get_weights())
+
+                    average_optimiser_list.pop()
+                    average_optimiser_list.append(optimiser.get_weights())
+
+                if len(average_model_list) > parameters.model_average_window_length:
+                    average_model_list.pop(0)
+                    average_optimiser_list.pop(0)
+
+        gc.collect()
+        tf.keras.backend.clear_session()
+
     # return model, loss_list, x_prediction_uncertainty, previous_model_weight_list, previous_optimiser_weight_list
-    return model, loss_list, tf.constant(0.0, dtype=tf.float32), previous_model_weight_list, previous_optimiser_weight_list
+    return model, loss_list, tf.constant(0.0, dtype=tf.float32), previous_model_weight_list, average_model_list, previous_optimiser_weight_list, average_optimiser_list
 
 
 def get_bayesian_test_prediction(model, x_train_iteration, bayesian_iteration, bayesian_bool):
@@ -743,25 +882,9 @@ def get_bayesian_test_prediction(model, x_train_iteration, bayesian_iteration, b
     x_prediction = []
     x_latent = []
 
-    x_latent_0 = []
-    x_latent_1 = []
-    x_latent_2 = []
-    x_latent_3 = []
-    x_latent_4 = []
-    x_latent_5 = []
-    x_latent_6 = []
-
     for i in range(len(x_prediction_list)):
         x_prediction.append(x_prediction_list[i][0])
-        x_latent.append(x_prediction_list[i][8])
-
-        x_latent_0.append(x_prediction_list[i][1])
-        x_latent_1.append(x_prediction_list[i][2])
-        x_latent_2.append(x_prediction_list[i][3])
-        x_latent_3.append(x_prediction_list[i][4])
-        x_latent_4.append(x_prediction_list[i][5])
-        x_latent_5.append(x_prediction_list[i][6])
-        x_latent_6.append(x_prediction_list[i][7])
+        x_latent.append(x_prediction_list[i][1])
 
     x_prediction_uncertainty_volume = tf.math.reduce_std(x_prediction, axis=0)
     x_latent_uncertainty_volume = tf.math.reduce_std(x_latent, axis=0)
@@ -769,24 +892,16 @@ def get_bayesian_test_prediction(model, x_train_iteration, bayesian_iteration, b
     x_prediction = tf.math.reduce_mean(x_prediction, axis=0)
     x_latent = tf.math.reduce_mean(x_latent, axis=0)
 
-    x_latent_0 = tf.math.reduce_mean(x_latent_0, axis=0)
-    x_latent_1 = tf.math.reduce_mean(x_latent_1, axis=0)
-    x_latent_2 = tf.math.reduce_mean(x_latent_2, axis=0)
-    x_latent_3 = tf.math.reduce_mean(x_latent_3, axis=0)
-    x_latent_4 = tf.math.reduce_mean(x_latent_4, axis=0)
-    x_latent_5 = tf.math.reduce_mean(x_latent_5, axis=0)
-    x_latent_6 = tf.math.reduce_mean(x_latent_6, axis=0)
-
     x_prediction_uncertainty = tf.math.reduce_mean(x_prediction_uncertainty_volume)
     x_latent_uncertainty = tf.math.reduce_mean(x_latent_uncertainty_volume)
 
-    return x_prediction, x_prediction_uncertainty, x_prediction_uncertainty_volume, x_latent, x_latent_uncertainty, x_latent_uncertainty_volume, x_latent_0, x_latent_1, x_latent_2, x_latent_3, x_latent_4, x_latent_5, x_latent_6
+    return x_prediction, x_prediction_uncertainty, x_prediction_uncertainty_volume, x_latent, x_latent_uncertainty, x_latent_uncertainty_volume
 
 
 def test_step(model, loss, x_train_iteration, y_train_iteration, loss_mask_train_iteration, evaluation_loss_list):
     print("test_step")
 
-    x_prediction, x_prediction_uncertainty, x_prediction_uncertainty_volume, x_latent, x_latent_uncertainty, x_latent_uncertainty_volume, x_latent_0, x_latent_1, x_latent_2, x_latent_3, x_latent_4, x_latent_5, x_latent_6 = \
+    x_prediction, x_prediction_uncertainty, x_prediction_uncertainty_volume, x_latent, x_latent_uncertainty, x_latent_uncertainty_volume = \
         get_bayesian_test_prediction(model, x_train_iteration, parameters.bayesian_iterations,
                                      parameters.bayesian_test_bool)
 
@@ -801,8 +916,8 @@ def test_step(model, loss, x_train_iteration, y_train_iteration, loss_mask_train
     return x_prediction, evaluation_loss_list, x_prediction_uncertainty, x_prediction_uncertainty_volume, current_accuracy
 
 
-def test_backup(model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list,
-                previous_optimiser_weight_list):
+def test_backup(model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list, average_model_list,
+                previous_optimiser_weight_list, average_optimiser_list):
     print("train_backup")
 
     print("WARNING: Accuracy has become NaN; backing up...")
@@ -814,7 +929,14 @@ def test_backup(model, optimiser, loss_list, evaluation_loss_list, previous_mode
         loss_list.pop()
         evaluation_loss_list.pop()
         previous_model_weight_list.pop()
+
+        if len(average_model_list) > 0:
+            average_model_list.pop()
+
         previous_optimiser_weight_list.pop()
+
+        if len(average_optimiser_list) > 0:
+            average_optimiser_list.pop()
 
     with open(previous_model_weight_list[-1], "rb") as file:
         model.set_weights(pickle.load(file))
@@ -832,19 +954,27 @@ def test_backup(model, optimiser, loss_list, evaluation_loss_list, previous_mode
         loss_list.pop()
         evaluation_loss_list.pop()
         previous_model_weight_list.pop()
+
+        if len(average_model_list) > 0:
+            average_model_list.pop()
+
         previous_optimiser_weight_list.pop()
 
-    return model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list, previous_optimiser_weight_list
+    return model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list, average_model_list, previous_optimiser_weight_list, average_optimiser_list
 
 
 def output_window_predictions(x_prediction, y_train_iteration, gt_prediction, loss_mask_train_iteration,
-                              x_prediction_uncertainty_volume, preprocessing_steps, window_input_shape,
-                              current_output_path, j):
+                              x_prediction_uncertainty_volume, x_preprocessing_steps, y_preprocessing_steps,
+                              gt_preprocessing_steps, window_input_shape, current_output_path, j):
     print("output_window_predictions")
 
-    # x_prediction, _ = preprocessing.data_preprocessing([x_prediction], "numpy", preprocessing_steps)
+    x_prediction = preprocessing.data_preprocessing([x_prediction], "numpy", False, False, y_preprocessing_steps)[0][0]
+    # x_prediction = preprocessing.mask_fov(x_prediction)
     x_prediction = np.squeeze(preprocessing.data_downsampling_crop([x_prediction], "numpy", window_input_shape)[0])
 
+    x_prediction_uncertainty_volume = preprocessing.data_preprocessing([x_prediction_uncertainty_volume], "numpy",
+                                                                       False, True, y_preprocessing_steps)[0][0]
+    # x_prediction_uncertainty_volume = preprocessing.mask_fov(x_prediction_uncertainty_volume)
     x_prediction_uncertainty_volume = np.squeeze(preprocessing.data_downsampling_crop([x_prediction_uncertainty_volume],
                                                                                       "numpy", window_input_shape)[0])
 
@@ -860,7 +990,8 @@ def output_window_predictions(x_prediction, y_train_iteration, gt_prediction, lo
         current_x_prediction = x_prediction
 
     if gt_prediction is not None:
-        # gt_prediction, _ = preprocessing.data_preprocessing([gt_prediction], "numpy", preprocessing_steps)
+        gt_prediction = preprocessing.data_preprocessing([gt_prediction], "numpy", False, False,
+                                                         gt_preprocessing_steps)[0][0]
         gt_prediction = np.squeeze(preprocessing.data_downsampling_crop([gt_prediction], "numpy",
                                                                         window_input_shape)[0])
 
@@ -873,7 +1004,8 @@ def output_window_predictions(x_prediction, y_train_iteration, gt_prediction, lo
             [losses.correlation_coefficient_accuracy(current_gt_prediction, current_x_prediction).numpy(),
              losses.scale_accuracy(current_gt_prediction, current_x_prediction).numpy()]
     else:
-        # y_train_iteration, _ = preprocessing.data_preprocessing([y_train_iteration], "numpy", preprocessing_steps)
+        y_train_iteration = preprocessing.data_preprocessing([y_train_iteration], "numpy", False, False,
+                                                             y_preprocessing_steps)[0][0]
         y_train_iteration = np.squeeze(preprocessing.data_downsampling_crop([y_train_iteration], "numpy",
                                                                             window_input_shape)[0])
 
@@ -906,7 +1038,8 @@ def output_window_predictions(x_prediction, y_train_iteration, gt_prediction, lo
 
 
 def output_patient_time_point_predictions(window_data_paths, example_data, windowed_full_input_axial_size,
-                                          full_input_shape, current_output_path, current_output_prefix, i):
+                                          high_resolution_input_shape, full_input_shape, current_output_path,
+                                          current_output_prefix, i):
     print("output_patient_time_point_predictions")
 
     if len(window_data_paths) > 1:
@@ -951,14 +1084,11 @@ def output_patient_time_point_predictions(window_data_paths, example_data, windo
     else:
         output_array = nib.load(window_data_paths[0]).get_fdata()
 
-    output_array = np.squeeze(preprocessing.data_downsampling_crop([output_array], "numpy", full_input_shape)[0])
+    output_array = np.squeeze(preprocessing.data_downsampling([output_array], "numpy", full_input_shape)[0])
+    output_array = np.squeeze(preprocessing.data_upsample_pad([output_array], "numpy", high_resolution_input_shape,
+                                                              "constant")[0])
 
-    example_data_header = example_data.header
-
-    output_array = np.squeeze(preprocessing.data_downsampling([output_array], "numpy",
-                                                              example_data_header.get_data_shape())[0])
-
-    output_volume = nib.Nifti1Image(output_array, example_data.affine, example_data_header)
+    output_volume = nib.Nifti1Image(output_array, example_data.affine, example_data.header)
 
     current_data_path = "{0}/{1}_{2}.nii.gz".format(current_output_path, str(i), current_output_prefix)
     nib.save(output_volume, current_data_path)
@@ -970,11 +1100,11 @@ def train_model():
     print("train_model")
 
     # get data and lables
-    x, y, example_data, preprocessing_steps, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt, data_mask, loss_mask = \
+    x, y, example_data, x_preprocessing_steps, y_preprocessing_steps, gt_preprocessing_steps, high_resolution_input_shape, full_input_shape, windowed_full_input_axial_size, window_input_shape, gt, data_mask, loss_mask = \
         get_preprocessed_train_data()
 
     with gzip.GzipFile(x[0], "r") as file:
-        input_shape = np.load(file)[0].shape
+        input_shape = np.load(file)[0].shape  # noqa
 
     model, optimiser, loss = architecture.get_model_all(input_shape)
     model.summary()
@@ -996,6 +1126,9 @@ def train_model():
     output_uncertainty_paths = []
     output_accuracies = []
 
+    average_model_list = []
+    average_optimiser_list = []
+
     for i in range(len(y)):
         if parameters.new_model_patient_bool and not parameters.new_model_window_bool:
             if os.path.exists(model_update_path):
@@ -1011,6 +1144,8 @@ def train_model():
 
                 model = architecture.get_model(input_shape)
 
+                average_model_list = []
+
         if parameters.new_optimiser_patient_bool and not parameters.new_optimiser_window_bool:
             del optimiser
 
@@ -1018,6 +1153,8 @@ def train_model():
             tf.keras.backend.clear_session()
 
             optimiser = architecture.get_optimiser()
+
+            average_optimiser_list = []
 
         print("Patient/Time point:\t{0}".format(str(i)))
 
@@ -1028,7 +1165,7 @@ def train_model():
             os.makedirs(patient_output_path, mode=0o770)
 
         with gzip.GzipFile(x[i], "r") as file:
-            number_of_windows = np.load(file).shape[0]
+            number_of_windows = np.load(file).shape[0]  # noqa
 
         current_window_data_paths = []
         current_window_uncertainty_data_paths = []
@@ -1049,6 +1186,8 @@ def train_model():
 
                     model = architecture.get_model(input_shape)
 
+                    average_model_list = []
+
             if parameters.new_optimiser_window_bool:
                 del optimiser
 
@@ -1056,6 +1195,8 @@ def train_model():
                 tf.keras.backend.clear_session()
 
                 optimiser = architecture.get_optimiser()
+
+                average_optimiser_list = []
 
             print("Window:\t{0}".format(str(j)))
 
@@ -1078,10 +1219,10 @@ def train_model():
                 os.makedirs(model_output_path, mode=0o770)
 
             with gzip.GzipFile(x[i], "r") as file:
-                x_train_iteration = np.asarray([np.load(file)[j]])
+                x_train_iteration = np.asarray([np.load(file)[j]])  # noqa
 
             with gzip.GzipFile(y[i], "r") as file:
-                y_train_iteration = np.asarray([np.load(file)[j]])
+                y_train_iteration = np.asarray([np.load(file)[j]])  # noqa
 
             x_train_iteration = tf.convert_to_tensor(x_train_iteration)
             y_train_iteration = tf.convert_to_tensor(y_train_iteration)
@@ -1099,7 +1240,7 @@ def train_model():
 
             if gt is not None:
                 with gzip.GzipFile(gt[i], "r") as file:
-                    gt_prediction = np.asarray([np.load(file)[j]])
+                    gt_prediction = np.asarray([np.load(file)[j]])  # noqa
 
                 gt_prediction = tf.convert_to_tensor(gt_prediction)
 
@@ -1115,7 +1256,7 @@ def train_model():
 
             if loss_mask is not None:
                 with gzip.GzipFile(loss_mask[i], "r") as file:
-                    loss_mask_train_iteration = np.asarray([np.load(file)[j]])
+                    loss_mask_train_iteration = np.asarray([np.load(file)[j]])  # noqa
 
                 loss_mask_train_iteration = tf.convert_to_tensor(loss_mask_train_iteration)
 
@@ -1153,10 +1294,10 @@ def train_model():
 
                 print("Iteration:\t{0:<20}\tTotal iterations:\t{1:<20}".format(str(len(loss_list)), str(total_iterations)))
 
-                model, loss_list, uncertainty, previous_model_weight_list, previous_optimiser_weight_list = \
+                model, loss_list, uncertainty, previous_model_weight_list, average_model_list, previous_optimiser_weight_list, average_optimiser_list = \
                     train_step(model, optimiser, loss, x_train_iteration, y_train_iteration, loss_mask_train_iteration,
-                               loss_list, previous_model_weight_list, previous_optimiser_weight_list,
-                               model_output_path)
+                               loss_list, previous_model_weight_list, average_model_list,
+                               previous_optimiser_weight_list, average_optimiser_list, model_output_path)
 
                 x_prediction, evaluation_loss_list, x_prediction_uncertainty, x_prediction_uncertainty_volume, current_accuracy = \
                     test_step(model, loss, x_train_iteration, y_train_iteration, loss_mask_train_iteration,
@@ -1164,9 +1305,9 @@ def train_model():
 
                 if ((np.isnan(current_accuracy[0].numpy()) or np.isinf(current_accuracy[0].numpy())) or
                         (np.isnan(current_accuracy[1].numpy()) or np.isinf(current_accuracy[1].numpy()))):
-                    model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list, previous_optimiser_weight_list = \
+                    model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list, average_model_list, previous_optimiser_weight_list, average_optimiser_list = \
                         test_backup(model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list,
-                                    previous_optimiser_weight_list)
+                                    average_model_list, previous_optimiser_weight_list, average_optimiser_list)
 
                     current_accuracy_nan_patience = current_accuracy_nan_patience + 1
 
@@ -1197,9 +1338,9 @@ def train_model():
 
                     if ((np.isnan(gt_accuracy[0].numpy()) or np.isinf(gt_accuracy[0].numpy())) or
                             (np.isnan(gt_accuracy[1].numpy()) or np.isinf(gt_accuracy[1].numpy()))):
-                        model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list, previous_optimiser_weight_list = \
+                        model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list, average_model_list, previous_optimiser_weight_list, average_optimiser_list = \
                             test_backup(model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list,
-                                        previous_optimiser_weight_list)
+                                        average_model_list, previous_optimiser_weight_list, average_optimiser_list)
 
                         current_accuracy_nan_patience = current_accuracy_nan_patience + 1
 
@@ -1221,35 +1362,52 @@ def train_model():
                         max_accuracy_iteration = len(loss_list) - 1
 
                 if np.isnan(evaluation_loss_list[-1].numpy()) or np.isinf(evaluation_loss_list[-1].numpy()):
-                    model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list, previous_optimiser_weight_list = \
+                    model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list, average_model_list, previous_optimiser_weight_list, average_optimiser_list = \
                         test_backup(model, optimiser, loss_list, evaluation_loss_list, previous_model_weight_list,
-                                    previous_optimiser_weight_list)
+                                    average_model_list, previous_optimiser_weight_list, average_optimiser_list)
 
                     continue
 
                 x_output = np.squeeze(x_prediction.numpy()).astype(np.float64)
                 y_output = np.squeeze(y_train_iteration.numpy()).astype(np.float64)
 
+                vmin = np.percentile(y_output, 0)
+                vmax = np.percentile(y_output, 99.5)
+
                 plt.figure()
 
                 if gt is not None:
-                    plt.subplot(1, 3, 1)
+                    plt.subplot(2, 3, 1)
                 else:
-                    plt.subplot(1, 2, 1)
+                    plt.subplot(2, 2, 1)
+
+                plt.imshow(x_output[:, :, int(x_output.shape[2] / 2)], cmap="Greys", vmin=vmin, vmax=vmax)
+
+                if gt is not None:
+                    plt.subplot(2, 3, 4)
+                else:
+                    plt.subplot(2, 2, 3)
 
                 plt.imshow(x_output[:, :, int(x_output.shape[2] / 2)], cmap="Greys")
 
                 if gt is not None:
-                    plt.subplot(1, 3, 2)
+                    plt.subplot(2, 3, 2)
                 else:
-                    plt.subplot(1, 2, 2)
+                    plt.subplot(2, 2, 2)
+
+                plt.imshow(y_output[:, :, int(y_output.shape[2] / 2)], cmap="Greys", vmin=vmin, vmax=vmax)
+
+                if gt is not None:
+                    plt.subplot(2, 3, 5)
+                else:
+                    plt.subplot(2, 2, 4)
 
                 plt.imshow(y_output[:, :, int(y_output.shape[2] / 2)], cmap="Greys")
 
                 if gt is not None:
                     gt_plot = np.squeeze(gt_prediction).astype(np.float64)
 
-                    plt.subplot(1, 3, 3)
+                    plt.subplot(2, 3, 3)
                     plt.imshow(gt_plot[:, :, int(gt_plot.shape[2] / 2)], cmap="Greys")
 
                 plt.tight_layout()
@@ -1322,7 +1480,7 @@ def train_model():
                 continue
 
             if parameters.bayesian_test_bool != parameters.bayesian_output_bool:
-                x_prediction, x_prediction_uncertainty, x_prediction_uncertainty_volume, x_latent, x_latent_uncertainty, x_latent_uncertainty_volume, x_latent_0, x_latent_1, x_latent_2, x_latent_3, x_latent_4, x_latent_5, x_latent_6 = \
+                x_prediction, x_prediction_uncertainty, x_prediction_uncertainty_volume, x_latent, x_latent_uncertainty, x_latent_uncertainty_volume = \
                     get_bayesian_test_prediction(model, x_train_iteration, parameters.bayesian_iterations,
                                                  parameters.bayesian_output_bool)
 
@@ -1336,7 +1494,8 @@ def train_model():
             current_window_data_path, current_window_uncertainty_data_path, current_output_accuracy = \
                 output_window_predictions(x_output, y_output, gt_prediction, loss_mask_train_iteration,
                                           np.squeeze(x_prediction_uncertainty_volume.numpy()).astype(np.float64),
-                                          preprocessing_steps, window_input_shape, window_output_path, j)
+                                          x_preprocessing_steps, y_preprocessing_steps, gt_preprocessing_steps,
+                                          window_input_shape, window_output_path, j)
 
             current_window_data_paths.append(current_window_data_path)
             current_window_uncertainty_data_paths.append(current_window_uncertainty_data_path)
@@ -1355,12 +1514,13 @@ def train_model():
         try:
             output_paths.append(output_patient_time_point_predictions(current_window_data_paths, example_data,
                                                                       windowed_full_input_axial_size,
-                                                                      full_input_shape, patient_output_path, "output",
-                                                                      i))
+                                                                      high_resolution_input_shape, full_input_shape,
+                                                                      patient_output_path, "output", i))
 
             output_uncertainty_paths.append(output_patient_time_point_predictions(current_window_uncertainty_data_paths,
                                                                                   example_data,
                                                                                   windowed_full_input_axial_size,
+                                                                                  high_resolution_input_shape,
                                                                                   full_input_shape, patient_output_path,
                                                                                   "uncertainty", i))
 

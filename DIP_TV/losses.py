@@ -23,36 +23,44 @@ def mean_squared_error_loss(y_true, y_pred):
     return tf.keras.backend.mean(tf.math.squared_difference(y_pred, y_true), axis=-1)
 
 
-# https://github.com/tensorflow/tensorflow/blob/v2.6.0/tensorflow/python/ops/image_ops_impl.py#L3213-L3282
-def total_variation(images):
-    # The input is a batch of images with shape:
-    # [batch, height, width, depth, channels].
-
-    # Calculate the difference of neighboring pixel-values.
-    # The images are shifted one pixel along the height, width and depth by slicing.
-    pixel_dif1 = tf.math.abs(images[:, 1:, :, :, :] - images[:, :-1, :, :, :])
-    pixel_dif2 = tf.math.abs(images[:, :, 1:, :, :] - images[:, :, :-1, :, :])
-    pixel_dif3 = tf.math.abs(images[:, :, :, 1:, :] - images[:, :, :, :-1, :])
-
-    # Calculate the total variation by taking the absolute value of the
-    # pixel-differences and summing over the appropriate axis.
-    tot_var = tf.math.reduce_sum(pixel_dif1) + tf.math.reduce_sum(pixel_dif2) + tf.math.reduce_sum(pixel_dif3)
-
-    return tot_var
-
-
 def total_variation_loss(_, y_pred):
     y_pred = tf.cast(y_pred, dtype=tf.float32)
 
-    return parameters.total_variation_weight * tf.reduce_mean(total_variation(y_pred))
+    y_pred = y_pred - tf.reduce_min(y_pred)
+
+    oon = tf.math.divide_no_nan(1.0, tf.math.sqrt(tf.math.square(1.0) + tf.math.square(1.0))).numpy()
+    ooo = tf.math.divide_no_nan(1.0, tf.math.sqrt(tf.math.square(1.0) + tf.math.square(1.0) + tf.math.square(1.0))).numpy()
+
+    total_variation_kernel = tf.constant([[[ooo, oon, ooo], [oon, 1.0, oon], [ooo, oon, ooo]],
+                                          [[oon, 1.0, oon], [1.0, 0.0, 1.0], [oon, 1.0, oon]],
+                                          [[ooo, oon, ooo], [oon, 1.0, oon], [ooo, oon, ooo]]], dtype=tf.float32)
+    total_variation_kernel = tf.math.divide_no_nan(total_variation_kernel, tf.math.reduce_sum(total_variation_kernel))
+
+    tvs = tf.reduce_sum(total_variation_kernel).numpy()
+
+    total_variation_kernel = total_variation_kernel * -1.0
+    total_variation_kernel = (total_variation_kernel +
+                              tf.constant([[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                                           [[0.0, 0.0, 0.0], [0.0, tvs, 0.0], [0.0, 0.0, 0.0]],
+                                           [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]], dtype=tf.float32))
+    total_variation_kernel = total_variation_kernel[:, :, :, tf.newaxis, tf.newaxis]
+
+    y_pred = tf.pad(y_pred, [[0, 0], [1, 1], [1, 1], [1, 1], [0, 0]], "SYMMETRIC")
+    y_pred = tf.nn.conv3d(input=y_pred,
+                          filters=total_variation_kernel,
+                          strides=[1, 1, 1, 1, 1],
+                          padding="VALID",
+                          dilations=[1, 1, 1, 1, 1])
+
+    return parameters.total_variation_weight * tf.reduce_mean(tf.math.square(y_pred))
 
 
-def mean_square_error_total_variation_loss(y_true, y_pred):
+def mean_squared_error_total_variation_loss(y_true, y_pred):
     y_true = tf.cast(y_true, dtype=tf.float32)
     y_pred = tf.cast(y_pred, dtype=tf.float32)
 
-    return ((mean_squared_error_loss(y_true, y_pred)) +
-            (parameters.total_variation_weight * total_variation_loss(y_true, y_pred))) / 2.0
+    return tf.reduce_sum(tf.stack([mean_squared_error_loss(y_true, y_pred),
+                                   total_variation_loss(y_true, y_pred)]))
 
 
 # https://stackoverflow.com/questions/46619869/how-to-specify-the-correlation-coefficient-as-the-loss-function-in-keras

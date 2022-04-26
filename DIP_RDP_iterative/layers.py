@@ -22,15 +22,6 @@ import losses
 import parameters
 
 
-def get_gaussian_noise(x, sigma):
-    print("get_gaussian_noise")
-
-    if sigma > 0.0:
-        x = tf.keras.layers.GaussianNoise(sigma)(x)
-
-    return x
-
-
 # https://www.machinecurve.com/index.php/2020/02/10/using-constant-padding-reflection-padding-and-replication-padding-with-keras/#reflection-padding
 '''
   3D Padding
@@ -42,6 +33,7 @@ def get_gaussian_noise(x, sigma):
 class Padding3D(tf.keras.layers.Layer):
     def __init__(self, padding=(0, 0, 0), **kwargs):
         self.padding = tuple(padding)
+
         super(Padding3D, self).__init__(**kwargs)
 
     def compute_output_shape(self, input_shape):
@@ -77,17 +69,41 @@ def get_padding(x, size):
     else:
         kernel_padding_3 = int(size[2] / 2) - 1
 
-    if kernel_padding_1 != 0:
-        for i in range(kernel_padding_1):
-            x = Padding3D((1, 0, 0))(x)  # noqa
+    if (kernel_padding_1 != kernel_padding_2 or kernel_padding_1 != kernel_padding_3 or
+            kernel_padding_2 != kernel_padding_3):
+        if kernel_padding_1 != 0:
+            for i in range(kernel_padding_1):
+                x = Padding3D((1, 0, 0))(x)  # noqa
 
-    if kernel_padding_2 != 0:
-        for i in range(kernel_padding_2):
-            x = Padding3D((0, 1, 0))(x)  # noqa
+        if kernel_padding_2 != 0:
+            for i in range(kernel_padding_2):
+                x = Padding3D((0, 1, 0))(x)  # noqa
 
-    if kernel_padding_3 != 0:
-        for i in range(kernel_padding_3):
-            x = Padding3D((0, 0, 1))(x)  # noqa
+        if kernel_padding_3 != 0:
+            for i in range(kernel_padding_3):
+                x = Padding3D((0, 0, 1))(x)  # noqa
+    else:
+        if kernel_padding_1 != 0:
+            for i in range(kernel_padding_1):
+                x = Padding3D((1, 1, 1))(x)  # noqa
+
+    return x
+
+
+def get_orthogonal_convolution_layer(x, depth, size, name=None):
+    print("get_orthogonal_convolution_layer")
+
+    x = get_padding(x, size)
+    x = tfa.layers.GroupNormalization(groups=1)(x)  # noqa
+    x = tf.keras.layers.Conv3D(filters=depth,
+                               kernel_size=size,
+                               strides=(1, 1, 1),
+                               dilation_rate=(1, 1, 1),
+                               groups=1,
+                               padding="valid",
+                               kernel_initializer=tf.keras.initializers.Orthogonal(seed=DIP_RDP_iterative.seed_value),
+                               bias_initializer=tf.keras.initializers.Constant(0.0),
+                               name=name)(x)
 
     return x
 
@@ -126,14 +142,23 @@ def channel_shuffle(x, groups):
 def get_channel_shuffle(x, groups):
     print("get_channel_shuffle")
 
-    if groups > 1:
+    if groups > 1 and groups != x.shape[-1]:
         x = tf.keras.layers.Lambda(channel_shuffle, arguments={"groups": groups})(x)
 
     return x
 
 
+def get_gaussian_noise(x, sigma):
+    print("get_gaussian_noise")
+
+    if sigma > 0.0:
+        x = tf.keras.layers.GaussianNoise(sigma)(x)
+
+    return x
+
+
 # https://github.com/keras-team/keras/blob/v2.6.0/keras/layers/core.py#L1274-L1303
-class ActivityRegularisation(tf.keras.layers.Layer):
+class ActivityRegulariser(tf.keras.layers.Layer):
     """Layer that applies an update to the cost function based input activity.
 
     Input shape:
@@ -146,23 +171,24 @@ class ActivityRegularisation(tf.keras.layers.Layer):
     """
 
     def __init__(self, **kwargs):
-        super(ActivityRegularisation, self).__init__(activity_regularizer=losses.l1_regulariser, **kwargs)
+        super(ActivityRegulariser, self).__init__(activity_regularizer=losses.activity_regulariser, **kwargs)
+
         self.supports_masking = True
 
     def compute_output_shape(self, input_shape):
         return input_shape
 
     def get_config(self):
-        base_config = super(ActivityRegularisation, self).get_config()
+        base_config = super(ActivityRegulariser, self).get_config()
 
         return dict(list(base_config.items()))
 
 
-def get_activity_regularisation(x):
+def get_activity_regulariser(x):
     print("get_gaussian_noise")
 
     if parameters.activity_regulariser_weight > 0.0:
-        x = ActivityRegularisation()(x)  # noqa
+        x = ActivityRegulariser()(x)  # noqa
 
     return x
 
@@ -179,7 +205,7 @@ def get_dropout(x):
     return x
 
 
-def get_convolution_layer(x, depth, size, stride, groups, orthogonal_bool, name=None):
+def get_convolution_layer(x, depth, size, stride, groups):
     print("get_convolution_layer")
 
     if groups > x.shape[-1]:
@@ -187,79 +213,59 @@ def get_convolution_layer(x, depth, size, stride, groups, orthogonal_bool, name=
 
     x = get_padding(x, size)
 
-    if orthogonal_bool:
-        if parameters.kernel_regulariser_weight > 0.0:
-            x = tf.keras.layers.Conv3D(filters=depth,
-                                       kernel_size=size,
-                                       strides=stride,
-                                       dilation_rate=(1, 1, 1),
-                                       groups=groups,
-                                       padding="valid",
-                                       kernel_initializer=tf.keras.initializers.HeNormal(
-                                           seed=DIP_RDP_iterative.seed_value),
-                                       bias_initializer=tf.keras.initializers.Constant(0.1),
-                                       kernel_regularizer=losses.l2_regulariser)(x)
-        else:
-            x = tf.keras.layers.Conv3D(filters=depth,
-                                       kernel_size=size,
-                                       strides=stride,
-                                       dilation_rate=(1, 1, 1),
-                                       groups=groups,
-                                       padding="valid",
-                                       kernel_initializer=tf.keras.initializers.HeNormal(
-                                           seed=DIP_RDP_iterative.seed_value),
-                                       bias_initializer=tf.keras.initializers.Constant(0.1))(x)
+    if parameters.kernel_regulariser_weight > 0.0:
+        x = tf.keras.layers.Conv3D(filters=depth,
+                                   kernel_size=size,
+                                   strides=stride,
+                                   dilation_rate=(1, 1, 1),
+                                   groups=groups,
+                                   padding="valid",
+                                   kernel_initializer=tf.keras.initializers.HeNormal(seed=DIP_RDP_iterative.seed_value),
+                                   bias_initializer=tf.keras.initializers.Constant(0.1),
+                                   kernel_regularizer=losses.l2_regulariser)(x)
     else:
-        if parameters.kernel_regulariser_weight > 0.0:
-            x = tf.keras.layers.Conv3D(filters=depth,
-                                       kernel_size=size,
-                                       strides=stride,
-                                       dilation_rate=(1, 1, 1),
-                                       groups=groups,
-                                       padding="valid",
-                                       kernel_initializer=tf.keras.initializers.Orthogonal(
-                                           seed=DIP_RDP_iterative.seed_value),
-                                       bias_initializer=tf.keras.initializers.Constant(0.1),
-                                       kernel_regularizer=losses.l2_regulariser)(x)
-        else:
-            x = tf.keras.layers.Conv3D(filters=depth,
-                                       kernel_size=size,
-                                       strides=stride,
-                                       dilation_rate=(1, 1, 1),
-                                       groups=groups,
-                                       padding="valid",
-                                       kernel_initializer=tf.keras.initializers.Orthogonal(
-                                           seed=DIP_RDP_iterative.seed_value),
-                                       bias_initializer=tf.keras.initializers.Constant(0.1))(x)
+        x = tf.keras.layers.Conv3D(filters=depth,
+                                   kernel_size=size,
+                                   strides=stride,
+                                   dilation_rate=(1, 1, 1),
+                                   groups=groups,
+                                   padding="valid",
+                                   kernel_initializer=tf.keras.initializers.HeNormal(seed=DIP_RDP_iterative.seed_value),
+                                   bias_initializer=tf.keras.initializers.Constant(0.1))(x)
 
     x = get_channel_shuffle(x, groups)
     x = tfa.layers.GroupNormalization(groups=groups)(x)  # noqa
     x = get_gaussian_noise(x, parameters.layer_gaussian_sigma)
     x = tf.keras.layers.Lambda(tfa.activations.mish)(x)
-    x = get_activity_regularisation(x)
-
-    if name is not None:
-        x = tf.keras.layers.Conv3D(filters=depth,
-                                   kernel_size=(1, 1, 1),
-                                   strides=(1, 1, 1),
-                                   dilation_rate=(1, 1, 1),
-                                   groups=1,
-                                   padding="valid",
-                                   kernel_initializer=tf.keras.initializers.Constant(1.0),
-                                   bias_initializer=tf.keras.initializers.Constant(0.0),
-                                   trainable=False,
-                                   name=name)(x)
-
+    x = get_activity_regulariser(x)
     x = get_dropout(x)
 
     return x
 
 
-def get_seperable_convolution_layer(x, depth, size, stride, groups):
-    print("get_seperable_convolution_layer")
+def get_depthwise_seperable_convolution_layer(x, depth, size, stride, groups):
+    print("get_depthwise_seperable_convolution_layer")
 
-    x = get_convolution_layer(x, x.shape[-1], size, stride, x.shape[-1], False)
-    x = get_convolution_layer(x, depth, (1, 1, 1), (1, 1, 1), groups, False)
+    # if depth > 1 and (size[0] > 1 or size[1] > 1 or size[2] > 1):
+    #     x = get_convolution_layer(x, x.shape[-1], size, stride, x.shape[-1])
+    #     x = get_convolution_layer(x, depth, (1, 1, 1), (1, 1, 1), groups)
+    # else:
+    #     x = get_convolution_layer(x, depth, size, stride, groups)
+
+    x = get_convolution_layer(x, depth, size, stride, groups)
+
+    return x
+
+
+def get_add_layer(x1, x2):
+    print("get_add_layer")
+
+    x = tf.keras.layers.Add()([x1, x2])  # noqa
+    x = tfa.layers.GroupNormalization(groups=1)(x)  # noqa
+    x = get_gaussian_noise(x, parameters.layer_gaussian_sigma)
+    x = tf.keras.layers.Lambda(tfa.activations.mish)(x)
+    x = get_activity_regulariser(x)
+    x = get_dropout(x)
 
     return x
 
@@ -270,7 +276,7 @@ def get_concatenate_layer(x1, x2, depth, size, stride, groups):
     x = tf.keras.layers.Concatenate()([x1, x2])
     x = get_channel_shuffle(x, 2)
 
-    x = get_convolution_layer(x, depth, size, stride, groups, False)
+    x = get_depthwise_seperable_convolution_layer(x, depth, size, stride, groups)
 
     return x
 
@@ -278,42 +284,16 @@ def get_concatenate_layer(x1, x2, depth, size, stride, groups):
 def get_downsample_layer(x, depth, size, groups):
     print("get_downsample_layer")
 
-    x1 = get_convolution_layer(x, depth, size, (2, 2, 2), groups, False)
+    x1 = get_depthwise_seperable_convolution_layer(x, depth, size, (2, 2, 2), groups)
 
-    if groups > x.shape[-1]:
-        groups = x.shape[-1]
-
-    x2 = get_padding(x, size)
-
-    if parameters.kernel_regulariser_weight:
-        x2 = tf.keras.layers.Conv3D(filters=depth,
-                                    kernel_size=size,
-                                    strides=(1, 1, 1),
-                                    dilation_rate=(1, 1, 1),
-                                    groups=groups,
-                                    padding="valid",
-                                    kernel_initializer=tf.keras.initializers.HeNormal(
-                                        seed=DIP_RDP_iterative.seed_value),
-                                    bias_initializer=tf.keras.initializers.Constant(0.1),
-                                    kernel_regularizer=losses.l2_regulariser)(x2)
-    else:
-        x2 = tf.keras.layers.Conv3D(filters=depth,
-                                    kernel_size=size,
-                                    strides=(1, 1, 1),
-                                    dilation_rate=(1, 1, 1),
-                                    groups=groups,
-                                    padding="valid",
-                                    kernel_initializer=tf.keras.initializers.HeNormal(
-                                        seed=DIP_RDP_iterative.seed_value),
-                                    bias_initializer=tf.keras.initializers.Constant(0.1))(x2)
+    x2 = get_depthwise_seperable_convolution_layer(x, depth, size, (1, 1, 1), groups)
 
     x2 = tf.keras.layers.MaxPooling3D(pool_size=(2, 2, 2),
                                       strides=(2, 2, 2))(x2)
-    x2 = get_channel_shuffle(x2, groups)
     x2 = tfa.layers.GroupNormalization(groups=groups)(x2)  # noqa
     x2 = get_gaussian_noise(x2, parameters.layer_gaussian_sigma)
     x2 = tf.keras.layers.Lambda(tfa.activations.mish)(x2)
-    x2 = get_activity_regularisation(x2)
+    x2 = get_activity_regulariser(x2)
     x2 = get_dropout(x2)
 
     x = get_concatenate_layer(x1, x2, depth, size, (1, 1, 1), groups)
@@ -321,7 +301,7 @@ def get_downsample_layer(x, depth, size, groups):
     return x
 
 
-def get_upsample_layer(x, depth, size, groups):
+def get_upsample_layer(x, depth, groups):
     print("get_upsample_layer")
 
     x = tf.keras.layers.UpSampling3D(size=(2, 2, 2))(x)
@@ -341,6 +321,12 @@ def get_upsample_layer(x, depth, size, groups):
                                                         "padding": "VALID",
                                                         "dilations": [1, 1, 1, 1, 1]})(x)
 
-    x = get_convolution_layer(x, depth, size, (1, 1, 1), groups, False)
+    x = tfa.layers.GroupNormalization(groups=groups)(x)  # noqa
+    x = get_gaussian_noise(x, parameters.layer_gaussian_sigma)
+    x = tf.keras.layers.Lambda(tfa.activations.mish)(x)
+    x = get_activity_regulariser(x)
+    x = get_dropout(x)
+
+    x = get_depthwise_seperable_convolution_layer(x, depth, (3, 3, 3), (1, 1, 1), groups)
 
     return x

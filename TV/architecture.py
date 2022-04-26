@@ -32,7 +32,7 @@ def get_model_all():
 def get_optimiser():
     print("get_optimiser")
 
-    optimiser = tf.keras.optimizers.Adam()
+    optimiser = tf.keras.optimizers.Adam(learning_rate=1.0, amsgrad=True)
 
     return optimiser
 
