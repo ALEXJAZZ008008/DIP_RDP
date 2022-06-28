@@ -18,11 +18,14 @@ import os
 # data_path = "{0}/DIP_RDP_data/kjell_parameter_search/".format(os.path.dirname(os.getcwd()))
 # output_path = "{0}/output/kjell_parameter_search/".format(os.getcwd())
 
-# data_path = "{0}/DIP_RDP_data/kjell_dynamic_lung_simulation/".format(os.path.dirname(os.getcwd()))
-# output_path = "{0}/output/kjell_dynamic_lung_simulation/".format(os.getcwd())
+# data_path = "{0}/DIP_RDP_data/kjell_liver_parameter_search/".format(os.path.dirname(os.getcwd()))
+# output_path = "{0}/output/kjell_liver_parameter_search/".format(os.getcwd())
 
-data_path = "{0}/DIP_RDP_data/kjell_dynamic_liver_simulation/".format(os.path.dirname(os.getcwd()))
-output_path = "{0}/output/kjell_dynamic_liver_simulation/".format(os.getcwd())
+data_path = "{0}/DIP_RDP_data/kjell_dynamic_lung_simulation/".format(os.path.dirname(os.getcwd()))
+output_path = "{0}/output/kjell_dynamic_lung_simulation/".format(os.getcwd())
+
+# data_path = "{0}/DIP_RDP_data/kjell_dynamic_liver_simulation/".format(os.path.dirname(os.getcwd()))
+# output_path = "{0}/output/kjell_dynamic_liver_simulation/".format(os.getcwd())
 
 noise_path = None
 
@@ -72,11 +75,14 @@ layer_gaussian_sigma = 0.0
 
 
 # dropout = 0.5
-dropout = 4.0 / layer_depth[-1]
+# dropout = 4.0 / layer_depth[-1]
+dropout = 1.0 / layer_depth[-1]
 
 bayesian_test_bool = False
 # bayesian_output_bool = True
 # bayesian_iterations = 64
+# bayesian_output_bool = True
+# bayesian_iterations = 128
 bayesian_output_bool = True
 bayesian_iterations = 128
 
@@ -85,7 +91,8 @@ epsilon = 1e-07
 
 total_variation_bool = True
 # total_variation_weight = 1e01
-total_variation_weight = 1e02
+# total_variation_weight = 1e02
+total_variation_weight = 1e01
 
 covariance_weight = 0.0
 
@@ -99,6 +106,7 @@ activity_regulariser_weight = 0.0
 
 
 # weight_decay = 1e-02
+# weight_decay = 1e-03
 weight_decay = 1e-03
 
 
@@ -110,8 +118,8 @@ model_average_bool = True
 model_average_gaussian_sigma = 0.0
 model_average_window_bool = True
 model_average_accumulate_bool = False
-model_average_window_length = 2
-# model_average_window_length = 16
+# model_average_window_length = 2
+model_average_window_length = 16
 
 patience_smoothing_bool = True
 patience_smoothing_magnitude = 9

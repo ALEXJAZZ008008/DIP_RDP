@@ -854,8 +854,8 @@ def train_step(model, optimiser, loss, x_train_iteration, y_train_iteration, los
         gc.collect()
         tf.keras.backend.clear_session()
 
-    # return model, loss_list, x_prediction_uncertainty, previous_model_weight_list, previous_optimiser_weight_list
-    return model, loss_list, tf.constant(0.0, dtype=tf.float32), previous_model_weight_list, average_model_list, previous_optimiser_weight_list, average_optimiser_list
+    # return model, optimiser, loss_list, x_prediction_uncertainty, previous_model_weight_list, previous_optimiser_weight_list
+    return model, optimiser, loss_list, tf.constant(0.0, dtype=tf.float32), previous_model_weight_list, average_model_list, previous_optimiser_weight_list, average_optimiser_list
 
 
 def get_bayesian_test_prediction(model, x_train_iteration, bayesian_iteration, bayesian_bool):
@@ -1240,7 +1240,7 @@ def train_model():
 
                 print("Iteration:\t{0:<20}Patient subiteration:\t{1:<20}\tWindow subiteration:\t{2:<20}\tTotal iterations:\t{3:<20}\tTotal subiterations:\t{4:<20}".format(str(len(loss_list)), str(len(patient_loss_list)), str(len(window_loss_list)), str(total_iterations), str(total_subiterations)))
 
-                model, window_loss_list, uncertainty, previous_model_weight_list, average_model_list, previous_optimiser_weight_list, average_optimiser_list = \
+                model, optimiser, window_loss_list, uncertainty, previous_model_weight_list, average_model_list, previous_optimiser_weight_list, average_optimiser_list = \
                     train_step(model, optimiser, loss, x_train_iteration, y_train_iteration, loss_mask_train_iteration,
                                window_loss_list, previous_model_weight_list, average_model_list,
                                previous_optimiser_weight_list, average_optimiser_list, model_output_path)

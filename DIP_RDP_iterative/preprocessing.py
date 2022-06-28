@@ -359,69 +359,6 @@ def data_downsampling_crop(data, data_type, new_resolution=None):
     return data
 
 
-# https://stackoverflow.com/questions/44865023/how-can-i-create-a-circular-mask-for-a-numpy-array
-def create_circular_mask(height, width, centre=None, radius=None):
-    print("create_circular_mask")
-
-    # use the middle of the image
-    if centre is None:
-        centre = (int(round(width / 2.0)), int(round(height / 2.0)))
-
-    # use the smallest distance between the center and image walls
-    if radius is None:
-        radius = min(centre[0], centre[1], width - centre[0], height - centre[1])
-    else:
-        if radius < 0.0:
-            radius = min(centre[0], centre[1], int(round((width - centre[0]) + radius)),
-                         int(round((height - centre[1]) + radius)))
-
-    y, x = np.ogrid[: height, : width]
-    dist_from_centre = np.sqrt(((x - centre[0]) ** 2.0) + ((y - centre[1]) ** 2.0))
-
-    mask = dist_from_centre <= radius
-
-    return mask
-
-
-def mask_fov(array):
-    print("mask_fov")
-
-    array_shape = np.shape(array)
-    array_shape_len = len(array_shape)
-
-    if array_shape_len > 3:
-        if array_shape_len < 5:
-            mask = create_circular_mask(array_shape[1], array_shape[2])
-
-            for i in range(array_shape[0]):
-                for j in range(array_shape[3]):
-                    masked_img = array[i, :, :, j].copy()
-                    masked_img[~ mask] = 0.0
-
-                    array[i, :, :, j] = masked_img
-        else:
-            mask = np.expand_dims(np.expand_dims(create_circular_mask(array_shape[1], array_shape[2]), axis=0), axis=-1)
-
-            for i in range(array_shape[0]):
-                for j in range(array_shape[3]):
-                    masked_img = array[i, :, :, j].copy()
-                    masked_img = np.expand_dims(masked_img, axis=0)
-
-                    masked_img[~ mask] = 0.0
-
-                    array[i, :, :, j] = masked_img
-    else:
-        mask = create_circular_mask(array_shape[0], array_shape[1])
-
-        for i in range(array_shape[2]):
-            masked_img = array[:, :, i].copy()
-            masked_img[~ mask] = 0.0
-
-            array[:, :, i] = masked_img
-
-    return array
-
-
 def data_preprocessing(data, data_type, noise_bool, std_only_bool, preprocessing_steps=None):
     print("data_preprocessing")
 
